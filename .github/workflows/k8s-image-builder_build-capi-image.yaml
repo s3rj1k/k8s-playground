@@ -9,6 +9,9 @@ on:
         type: choice
         options:
           - ubuntu-2004
+          - ubuntu-2004-efi
+          - ubuntu-2204
+          - ubuntu-2204-efi
           - flatcar
       kubernetes_series:
         description: "Kubernetes Series"
@@ -116,16 +119,31 @@ jobs:
       - name: Checkout image-builder repository
         uses: actions/checkout@v4
         with:
-          repository: kubernetes-sigs/image-builder
+          repository: s3rj1k/image-builder
           path: image-builder
-          ref: ${{ env.IMAGE_BUILDER_VERSION }}
+          ref: ubuntu-raw
+
+      # - name: Checkout repository
+      #   uses: actions/checkout@v4
+      #   with:
+      #     path: self
+
+      # # https://github.com/aws/eks-anywhere-build-tooling/blob/main/projects/kubernetes-sigs/image-builder/patches/0004-Ubuntu-22.04-support-and-improvements.patch
+      # - name: Apply Ubuntu 22.04 support patch for RAW target
+      #   working-directory: image-builder
+      #   shell: bash
+      #   run: |
+      #     if ! git apply $GITHUB_WORKSPACE/self/.github/workflows/patches/image-builder/0004-Ubuntu-22.04-support-and-improvements.patch; then
+      #       echo "Failed to apply patch"
+      #       exit 1
+      #     fi
 
       - name: Install build dependencies
         working-directory: image-builder/images/capi
         shell: bash
         run: |
           make deps-raw
-          packer plugins install github.com/hashicorp/qemu
+          .local/bin/packer plugins install github.com/hashicorp/qemu
 
       # https://image-builder.sigs.k8s.io/capi/capi
       - name: Create Kubernetes configuration
@@ -144,20 +162,35 @@ jobs:
 
       # https://github.com/kubernetes-sigs/image-builder/issues/1075
       # https://github.com/kubernetes-sigs/image-builder/issues/1638
-      - name: Update Packer vars_inline configuration
-        working-directory: image-builder/images/capi
-        shell: bash
-        run: |
-          jq '
-            .provisioners |= map(
-              if .type == "goss" then
-                .vars_inline.OS_VERSION = "{{user `distro_version` | lower}}"
-              else
-                .
-              end
-            )
-          ' packer/raw/packer.json.tmpl | tee packer/raw/packer.json.tmp \
-          && mv -vf packer/raw/packer.json.tmp packer/raw/packer.json.tmpl
+      # - name: Update Packer vars_inline configuration
+      #   working-directory: image-builder/images/capi
+      #   shell: bash
+      #   run: |
+      #     jq '
+      #       .provisioners |= map(
+      #         if .type == "goss" then
+      #           .vars_inline.OS_VERSION = "{{user `distro_version` | lower}}"
+      #         else
+      #           .
+      #         end
+      #       )
+      #     ' packer/raw/packer.json.tmpl | tee packer/raw/packer.json.tmp \
+      #     && mv -vf packer/raw/packer.json.tmp packer/raw/packer.json.tmpl
+
+      # https://github.com/aws/eks-anywhere-build-tooling/blob/main/projects/kubernetes-sigs/image-builder/patches/0007-adds-retries-and-timeout-to-packer-image-builder.patch
+      # - name: Patch Packer template
+      #   working-directory: image-builder/images/capi
+      #   shell: bash
+      #   run: |
+      #     jq '
+      #       .builders[0].ssh_handshake_attempts = "100" |
+      #       .builders[0].ssh_timeout = "40m" |
+      #       (.provisioners[] |= if .playbook_file == "./ansible/firstboot.yml" then .max_retries = 5 else . end) |
+      #       (.provisioners[] |= if .playbook_file == "./ansible/firstboot.yml" then .timeout = "30m" else . end) |
+      #       (.provisioners[] |= if .playbook_file == "./ansible/node.yml" then .max_retries = 5 else . end) |
+      #       (.provisioners[] |= if .playbook_file == "./ansible/node.yml" then .timeout = "30m" else . end)
+      #     ' packer/raw/packer.json.tmpl > packer/raw/packer.json.tmpl.tmp \
+      #     && mv -vf packer/raw/packer.json.tmpl.tmp packer/raw/packer.json.tmpl
 
       - name: Build RAW CAPI Image
         working-directory: image-builder/images/capi
