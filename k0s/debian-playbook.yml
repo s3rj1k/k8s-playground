@@ -1,0 +1,581 @@
+# Copyright 2025 s3rj1k
+# SPDX-License-Identifier: Apache-2.0
+
+# DEBUG: ansible-pull -U https://github.com/s3rj1k/k8s-playground.git k0s/debian-playbook.yml
+
+---
+- name: Kubernetes (k0s) on Debian AMD64
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  ignore_errors: false
+  vars:
+    clusterctl_version: "v1.9.5"
+    helm_version: "v3.17.1"
+    k0s_version: "v1.32.2+k0s.0"
+    krew_version: "v0.4.4"
+    registry_mirror: ""
+    worker_token: ""
+    yq_version: "v4.45.1"
+
+  pre_tasks:
+    - name: Check if system is supported
+      block:
+        - name: Check if user is root
+          fail:
+            msg: "This playbook must be run as root"
+          when: ansible_user_id != "root"
+
+        - name: Check if distribution is Debian
+          fail:
+            msg: "This playbook only supports Debian distributions"
+          when: ansible_distribution != "Debian"
+
+        - name: Check if architecture is AMD64
+          fail:
+            msg: "This playbook only supports AMD64 architecture"
+          when: ansible_architecture != "x86_64"
+
+        - name: Get Debian version
+          debug:
+            msg: "Running on Debian {{ ansible_distribution_version }} ({{ ansible_architecture }})"
+          when:
+            - ansible_distribution == "Debian"
+            - ansible_architecture == "x86_64"
+            - ansible_user_id == "root"
+
+    - name: Wait for system to be ready
+      wait_for:
+        path: /var/lib/cloud/instance/boot-finished
+        timeout: 600
+      when: ansible_service_mgr is defined and lookup('env', 'CLOUD_INIT') != ''
+
+  handlers:
+    - name: restart sshd
+      service:
+        name: ssh
+        state: restarted
+      when: ansible_service_mgr == 'systemd'
+
+  tasks:
+    - name: Remove system users and groups
+      block:
+        - name: Remove users
+          user:
+            name: "{{ item }}"
+            state: absent
+            remove: yes
+          loop:
+            - debian
+          ignore_errors: yes
+
+        - name: Remove groups
+          group:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - debian
+          ignore_errors: yes
+
+    - name: Update and upgrade system packages
+      apt:
+        update_cache: yes
+        upgrade: yes
+      register: system_upgraded
+
+    - name: Consolidated package management
+      block:
+        - name: Install all required packages
+          apt:
+            name:
+              # Base dependencies
+              - apt-transport-https
+              - ca-certificates
+              - curl
+              - gettext-base
+              - gnupg
+              - tar
+              # Locale
+              - locales
+              # SSH
+              - openssh-server
+              # GIT
+              - git
+              - git-lfs
+              # Multipath
+              - multipath-tools
+              # Security
+              - libseccomp2
+              # Networking
+              - ebtables
+              - iproute2
+              - libnetfilter-acct1
+              - libnetfilter-cttimeout1
+              - libnetfilter-log1
+              - socat
+              # Containers
+              - buildah
+              # Text and JSON processing
+              - gawk
+              - jq
+              - nano
+              - sed
+              # TUI
+              - mc
+            state: present
+            update_cache: yes
+          when: system_upgraded is success
+
+    - name: Configure SSH client
+      copy:
+        dest: /etc/ssh/ssh_config
+        content: |
+          Host *
+            AddressFamily inet
+            ForwardAgent yes
+            PasswordAuthentication no
+            # CheckHostIP no
+            # HashKnownHosts no
+            # StrictHostKeyChecking no
+
+    - name: Configure SSH server
+      block:
+        - name: Configure root login restrictions
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PermitRootLogin'
+            line: 'PermitRootLogin prohibit-password'
+
+        - name: Remove cloud-init SSH configuration
+          file:
+            path: /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+            state: absent
+          notify: restart sshd
+
+    - name: Configure multipath
+      block:
+        - name: Create multipath configuration file
+          copy:
+            dest: /etc/multipath.conf
+            content: |
+              defaults {
+                user_friendly_names yes
+              }
+            mode: '0644'
+
+        - name: Enable and start multipathd service
+          systemd:
+            name: multipathd
+            enabled: yes
+            state: started
+
+    - name: Install Helm
+      block:
+        - name: Download Helm {{ helm_version }}
+          get_url:
+            url: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+            dest: /tmp/helm.tar.gz
+            mode: '0644'
+
+        - name: Extract Helm binary
+          unarchive:
+            src: /tmp/helm.tar.gz
+            dest: /tmp
+            remote_src: yes
+
+        - name: Install Helm binary
+          copy:
+            src: /tmp/linux-amd64/helm
+            dest: /usr/local/bin/helm
+            mode: '0755'
+            remote_src: yes
+
+        - name: Remove temporary files
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/helm.tar.gz
+            - /tmp/linux-amd64
+      when: helm_version is defined and helm_version | length > 0
+
+    - name: Install kubectl-krew
+      block:
+        - name: Download Krew {{ krew_version }}
+          get_url:
+            url: "https://github.com/kubernetes-sigs/krew/releases/download/{{ krew_version }}/krew-linux_amd64.tar.gz"
+            dest: /tmp/krew.tar.gz
+            mode: '0644'
+
+        - name: Extract Krew binary
+          unarchive:
+            src: /tmp/krew.tar.gz
+            dest: /tmp
+            remote_src: yes
+
+        - name: Install Krew
+          shell: |
+            /tmp/krew-linux_amd64 install krew
+          environment:
+            KREW_ROOT: /opt/krew
+          args:
+            creates: /opt/krew/bin/kubectl-krew
+
+        - name: Set Krew environment variables
+          copy:
+            dest: /etc/profile.d/krew.sh
+            content: |
+              export KREW_ROOT=/opt/krew
+              export PATH="${KREW_ROOT}/bin:$PATH"
+            mode: '0644'
+
+        - name: Create Krew directories
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+          loop:
+            - /opt/krew
+            - /opt/krew/bin
+            - /opt/krew/receipts
+
+        - name: Remove temporary files
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/krew.tar.gz
+            - /tmp/krew-linux_amd64
+      when: krew_version is defined and krew_version | length > 0
+
+    - name: Install clusterctl
+      block:
+        - name: Download clusterctl binary
+          get_url:
+            url: "https://github.com/kubernetes-sigs/cluster-api/releases/download/{{ clusterctl_version }}/clusterctl-linux-amd64"
+            dest: /usr/local/bin/clusterctl
+            mode: '0755'
+      when: clusterctl_version is defined and clusterctl_version | length > 0
+
+    - name: Install yq
+      block:
+        - name: Download yq binary
+          get_url:
+            url: "https://github.com/mikefarah/yq/releases/download/{{ yq_version }}/yq_linux_amd64"
+            dest: /usr/local/bin/yq
+            mode: '0755'
+      when: yq_version is defined and yq_version | length > 0
+
+    - name: Configure kernel modules
+      block:
+        - name: Ensure required kernel modules are loaded
+          modprobe:
+            name: "{{ item }}"
+            state: present
+          loop:
+            - overlay
+            - br_netfilter
+
+        - name: Persist required kernel modules
+          copy:
+            dest: /etc/modules-load.d/99-local.conf
+            content: |
+              overlay
+              br_netfilter
+            mode: '0644'
+
+        - name: Configure kernel parameters
+          copy:
+            dest: /etc/sysctl.d/99-local.conf
+            content: |
+              fs.inotify.max_user_instances = 8192
+              fs.inotify.max_user_watches = 524288
+              kernel.panic = 10
+              kernel.panic_on_oops = 1
+              net.bridge.bridge-nf-call-ip6tables = 1
+              net.bridge.bridge-nf-call-iptables = 1
+              net.ipv4.conf.all.rp_filter = 1
+              net.ipv4.ip_forward = 1
+              net.ipv4.tcp_congestion_control = bbr
+              net.ipv6.conf.all.disable_ipv6 = 0
+              net.ipv6.conf.all.forwarding = 1
+              vm.overcommit_memory = 1
+            mode: '0644'
+
+        - name: Apply kernel parameters
+          command: sysctl --system
+          changed_when: false
+
+    - name: Disable swap
+      block:
+        - name: Disable swap memory
+          shell: |
+            swapoff -a
+          when: ansible_memory_mb.swap.total != 0
+
+        - name: Edit fstab file to disable swap
+          shell: sed -ri '/\sswap\s/s/^#?/#/' /etc/fstab
+          when: ansible_memory_mb.swap.total != 0
+
+    - name: Configure GRUB
+      block:
+        - name: Create GRUB configuration directory
+          file:
+            path: /etc/default/grub.d
+            state: directory
+            mode: '0755'
+
+        - name: Configure GRUB settings
+          copy:
+            dest: /etc/default/grub.d/50-settings.cfg
+            content: |
+              # Set the recordfail timeout
+              GRUB_RECORDFAIL_TIMEOUT=0
+
+              # Do not wait on grub prompt
+              GRUB_TIMEOUT=0
+
+              # Set the default commandline
+              GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0 transparent_hugepage=madvise"
+
+              # Set the grub console type
+              GRUB_TERMINAL=console
+            mode: '0644'
+          register: grub_config
+
+        - name: Update GRUB configuration
+          command: update-grub
+          when: grub_config is changed
+
+    - name: Install etcd network tuning script and udev rule
+      block:
+        - name: Create directory for scripts
+          file:
+            path: /usr/local/sbin
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+
+        - name: Install etcd network tuning script
+          copy:
+            dest: /usr/local/sbin/etcd-network-tuning.sh
+            content: |
+              #!/bin/bash
+
+              export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+              set -o errexit  # exits immediately on any unexpected error (does not bypass traps)
+              set -o nounset  # will error if variables are used without first being defined
+              set -o pipefail # any non-zero exit code in a piped command causes the pipeline to fail with that code
+
+              trap on_exit ERR
+              on_exit() {
+                  echo "Error setting etcd network tuning parameters for interface: ${DEV}" | systemd-cat -p emerg -t etcd-tuning
+              }
+
+              if [ "$#" -ne 1 ]; then
+                  echo "Error: Usage: $0 <dev>" | systemd-cat -p emerg -t etcd-tuning
+                  exit 1
+              fi
+
+              DEV=$1
+
+              echo "Setting etcd network tuning parameters for interface: ${DEV}" | systemd-cat -p info -t etcd-tuning
+              tc qdisc del dev ${DEV} root 2>/dev/null || true
+              tc qdisc add dev ${DEV} root handle 1: prio bands 3
+              tc filter add dev ${DEV} parent 1: protocol ip prio 1 u32 match ip sport 2380 0xffff flowid 1:1
+              tc filter add dev ${DEV} parent 1: protocol ip prio 1 u32 match ip dport 2380 0xffff flowid 1:1
+              tc filter add dev ${DEV} parent 1: protocol ip prio 2 u32 match ip sport 2379 0xffff flowid 1:1
+              tc filter add dev ${DEV} parent 1: protocol ip prio 2 u32 match ip dport 2379 0xffff flowid 1:1
+
+              exit 0
+            mode: '0755'
+            owner: root
+            group: root
+          register: script_install
+
+        - name: Install udev rule for etcd network tuning
+          copy:
+            dest: /etc/udev/rules.d/90-etcd-network-tuning.rules
+            content: |
+              ACTION=="add", SUBSYSTEM=="net", SUBSYSTEMS=="pci|xen|vmbus" RUN+="/usr/local/sbin/etcd-network-tuning.sh $name"
+            mode: '0644'
+            owner: root
+            group: root
+          register: udev_rule_install
+
+        - name: Reload udev rules if changed
+          command: udevadm control --reload-rules
+          when: udev_rule_install.changed
+
+        - name: Trigger udev events for network interfaces if script or rules changed
+          shell: find /sys/class/net -mindepth 1 -maxdepth 1 -type l -name "[a-z]*" -not -name "lo" -printf "%f\n" | xargs -I{} udevadm trigger --action=add --subsystem-match=net --sysname-match={}
+          when: script_install.changed or udev_rule_install.changed
+
+    - name: Install k0s
+      block:
+        - name: Download k0s binary
+          get_url:
+            url: "https://github.com/k0sproject/k0s/releases/download/{{ k0s_version }}/k0s-{{ k0s_version }}-amd64"
+            dest: /usr/local/bin/k0s
+            mode: '0755'
+
+        - name: Generate k0s configuration
+          # FeatureGates:
+          #  - https://kubernetes.io/docs/tasks/configure-pod-container/image-volumes/
+          shell: |
+            if [ ! -f /root/k0s.yaml ]; then
+              {% if registry_mirror | default("") | length > 0 %}
+              k0s config create | yq eval '
+                del(.spec.konnectivity) |
+                .spec.images.repository = "{{ registry_mirror }}" |
+                .spec.telemetry.enabled = false |
+                .spec.extensions.helm.concurrencyLevel = 3 |
+                .spec.featureGates = [
+                  {
+                    "name": "ImageVolume",
+                    "enabled": true
+                  }
+                ] |
+                .spec.api.sans |= [
+                  .[] |
+                  select(
+                    test("^fe80::") |
+                    not
+                  )
+                ]
+              ' > /root/k0s.yaml
+              {% else %}
+              k0s config create | yq eval '
+                del(.spec.konnectivity) |
+                .spec.telemetry.enabled = false |
+                .spec.extensions.helm.concurrencyLevel = 3 |
+                .spec.featureGates = [
+                  {
+                    "name": "ImageVolume",
+                    "enabled": true
+                  }
+                ] |
+                .spec.api.sans |= [
+                  .[] |
+                  select(
+                    test("^fe80::") |
+                    not
+                  )
+                ]
+              ' > /root/k0s.yaml
+              {% endif %}
+            fi
+          args:
+            executable: /bin/bash
+
+        - name: Create systemd override directory for k0scontroller
+          file:
+            path: /etc/systemd/system/k0scontroller.service.d
+            state: directory
+            mode: '0755'
+          when: worker_token | default("") | length == 0
+
+        - name: Create systemd override directory for k0sworker
+          file:
+            path: /etc/systemd/system/k0sworker.service.d
+            state: directory
+            mode: '0755'
+          when: worker_token | default("") | length > 0
+
+        - name: Configure k0scontroller service override
+          copy:
+            dest: /etc/systemd/system/k0scontroller.service.d/override.conf
+            content: |
+              [Service]
+              LimitNOFILE=1048576
+              OOMScoreAdjust=-999
+            mode: '0644'
+          when: worker_token | default("") | length == 0
+
+        - name: Configure k0sworker service override
+          copy:
+            dest: /etc/systemd/system/k0sworker.service.d/override.conf
+            content: |
+              [Service]
+              LimitNOFILE=1048576
+              OOMScoreAdjust=-999
+            mode: '0644'
+          when: worker_token | default("") | length > 0
+
+        - name: Install k0s as a Controller
+          shell: |
+            if [ ! -f /etc/systemd/system/k0scontroller.service ]; then
+              k0s install controller -c /root/k0s.yaml --enable-worker --no-taints --disable-components konnectivity-server --verbose
+            fi
+          args:
+            executable: /bin/bash
+          when: worker_token | default("") | length == 0
+
+        - name: Create Worker token file
+          copy:
+            content: "{{ worker_token }}"
+            dest: /root/k0s-token
+            mode: '0600'
+          when: worker_token | default("") | length > 0
+
+        - name: Install k0s as a Worker with token
+          shell: |
+            if [ ! -f /etc/systemd/system/k0sworker.service ]; then
+              k0s install worker --token-file=/root/k0s-token --verbose
+            fi
+          args:
+            executable: /bin/bash
+          when: worker_token | default("") | length > 0
+
+        - name: Start k0s Controller service
+          systemd:
+            name: k0scontroller.service
+            state: started
+            enabled: yes
+          when: worker_token | default("") | length == 0
+
+        - name: Start k0s Worker service
+          systemd:
+            name: k0sworker.service
+            state: started
+            enabled: yes
+          when: worker_token | default("") | length > 0
+
+        - name: Create k0s shell configuration file
+          copy:
+            dest: /etc/profile.d/k0s.sh
+            content: |
+              export KUBECONFIG=/var/lib/k0s/pki/admin.conf
+            mode: '0644'
+          when: worker_token | default("") | length == 0
+
+        - name: Create kubectl symlink
+          file:
+            src: /usr/local/bin/k0s
+            dest: /usr/local/bin/kubectl
+            state: link
+
+    - name: Mask unnecessary systemd units
+      systemd:
+        name: "{{ item }}"
+        masked: yes
+      loop:
+        - apparmor.service
+
+    - name: Handle system reboot check
+      block:
+        - name: Check if reboot is required
+          stat:
+            path: /var/run/reboot-required
+          register: reboot_required_file
+
+        - name: Print reboot status
+          debug:
+            msg: "System reboot is required"
+          when: reboot_required_file.stat.exists
+      when: system_upgraded is success
