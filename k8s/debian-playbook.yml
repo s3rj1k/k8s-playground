@@ -1,0 +1,488 @@
+# Copyright 2025 s3rj1k
+# SPDX-License-Identifier: Apache-2.0
+
+# DEBUG: ansible-pull -U https://github.com/s3rj1k/k8s-playground.git k8s/debian-playbook.yml
+
+---
+- name: Kubernetes (k8s) on Debian AMD64
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  ignore_errors: false
+  vars:
+    KUBERNETES_VERSION: "v1.32"
+    KUBERNETES_VERSION_FULL: "v1.32.0"
+    CRIO_VERSION: "v1.32"
+
+  pre_tasks:
+    - name: Check if system is supported
+      block:
+        - name: Check if user is root
+          fail:
+            msg: "This playbook must be run as root"
+          when: ansible_user_id != "root"
+
+        - name: Check if distribution is Debian
+          fail:
+            msg: "This playbook only supports Debian distributions"
+          when: ansible_distribution != "Debian"
+
+        - name: Check if architecture is AMD64
+          fail:
+            msg: "This playbook only supports AMD64 architecture"
+          when: ansible_architecture != "x86_64"
+
+        - name: Get Debian version
+          debug:
+            msg: "Running on Debian {{ ansible_distribution_version }} ({{ ansible_architecture }})"
+          when:
+            - ansible_distribution == "Debian"
+            - ansible_architecture == "x86_64"
+            - ansible_user_id == "root"
+
+    - name: Wait for system to be ready
+      wait_for:
+        path: /var/lib/cloud/instance/boot-finished
+        timeout: 600
+      when: ansible_service_mgr is defined and lookup('env', 'CLOUD_INIT') != ''
+
+  handlers:
+    - name: restart sshd
+      service:
+        name: ssh
+        state: restarted
+      when: ansible_service_mgr == 'systemd'
+
+  tasks:
+    - name: Remove system users and groups
+      block:
+        - name: Remove users
+          user:
+            name: "{{ item }}"
+            state: absent
+            remove: yes
+          loop:
+            - debian
+          ignore_errors: yes
+
+        - name: Remove groups
+          group:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - debian
+          ignore_errors: yes
+
+    - name: Update and upgrade system packages
+      apt:
+        update_cache: yes
+        upgrade: yes
+      register: system_upgraded
+
+    - name: Consolidated package management
+      block:
+        - name: Install minimum packages required for setting up repositories
+          apt:
+            name:
+              - apt-transport-https
+              - ca-certificates
+              - curl
+              - gnupg
+            state: present
+            update_cache: yes
+          when: system_upgraded is success
+
+        - name: Create apt keyrings directory
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: '0755'
+
+        - name: Add Kubernetes repository key
+          shell: |
+            curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ KUBERNETES_VERSION }}/deb/Release.key | \
+            gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+          args:
+            creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+        - name: Add Kubernetes repository
+          ansible.builtin.copy:
+            dest: /etc/apt/sources.list.d/kubernetes.list
+            content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ KUBERNETES_VERSION }}/deb/ /"
+            mode: '0644'
+
+        - name: Add CRI-O repository key
+          shell: |
+            curl -fsSL https://download.opensuse.org/repositories/isv:/cri-o:/stable:/{{ CRIO_VERSION }}/deb/Release.key | \
+            gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg
+          args:
+            creates: /etc/apt/keyrings/cri-o-apt-keyring.gpg
+
+        - name: Add CRI-O repository
+          ansible.builtin.copy:
+            dest: /etc/apt/sources.list.d/cri-o.list
+            content: "deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.gpg] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/{{ CRIO_VERSION }}/deb/ /"
+            mode: '0644'
+
+        - name: Add Helm repository key
+          shell: |
+            curl -fsSL https://baltocdn.com/helm/signing.asc | \
+            gpg --dearmor -o /etc/apt/keyrings/helm.gpg
+          args:
+            creates: /etc/apt/keyrings/helm.gpg
+
+        - name: Add Helm repository
+          ansible.builtin.copy:
+            dest: /etc/apt/sources.list.d/helm.list
+            content: "deb [signed-by=/etc/apt/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main"
+            mode: '0644'
+
+        - name: Update apt cache after adding repositories
+          apt:
+            update_cache: yes
+
+        - name: Install remaining required packages
+          apt:
+            name:
+              - gettext-base
+              - tar
+              # Locale
+              - locales
+              # SSH
+              - openssh-server
+              # GIT
+              - git
+              - git-lfs
+              # Multipath
+              - multipath-tools
+              # Security
+              - libseccomp2
+              # Networking
+              - ebtables
+              - iproute2
+              - libnetfilter-acct1
+              - libnetfilter-cttimeout1
+              - libnetfilter-log1
+              - socat
+              # Containers
+              - buildah
+              # Kubernetes
+              - cri-o
+              - cri-tools
+              - helm
+              - kubeadm
+              - kubectl
+              - kubelet
+              # Text and JSON processing
+              - gawk
+              - jq
+              - nano
+              - sed
+              - yq
+              # TUI
+              - mc
+            state: present
+          when: system_upgraded is success
+
+    - name: Configure SSH client
+      copy:
+        dest: /etc/ssh/ssh_config
+        content: |
+          Host *
+            AddressFamily inet
+            ForwardAgent yes
+            PasswordAuthentication no
+            # CheckHostIP no
+            # HashKnownHosts no
+            # StrictHostKeyChecking no
+
+    - name: Configure SSH server
+      block:
+        - name: Configure root login restrictions
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PermitRootLogin'
+            line: 'PermitRootLogin prohibit-password'
+
+        - name: Remove cloud-init SSH configuration
+          file:
+            path: /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+            state: absent
+          notify: restart sshd
+
+    - name: Configure multipath
+      block:
+        - name: Create multipath configuration file
+          copy:
+            dest: /etc/multipath.conf
+            content: |
+              defaults {
+                user_friendly_names yes
+              }
+            mode: '0644'
+
+        - name: Enable and start multipathd service
+          systemd:
+            name: multipathd
+            enabled: yes
+            state: started
+
+    - name: Configure kernel modules
+      block:
+        - name: Ensure required kernel modules are loaded
+          modprobe:
+            name: "{{ item }}"
+            state: present
+          loop:
+            - overlay
+            - br_netfilter
+
+        - name: Persist required kernel modules
+          copy:
+            dest: /etc/modules-load.d/99-local.conf
+            content: |
+              overlay
+              br_netfilter
+            mode: '0644'
+
+        - name: Configure kernel parameters
+          copy:
+            dest: /etc/sysctl.d/99-local.conf
+            content: |
+              fs.inotify.max_user_instances = 8192
+              fs.inotify.max_user_watches = 524288
+              kernel.panic = 10
+              kernel.panic_on_oops = 1
+              net.bridge.bridge-nf-call-ip6tables = 1
+              net.bridge.bridge-nf-call-iptables = 1
+              net.ipv4.conf.all.rp_filter = 1
+              net.ipv4.ip_forward = 1
+              net.ipv4.tcp_congestion_control = bbr
+              net.ipv6.conf.all.disable_ipv6 = 0
+              net.ipv6.conf.all.forwarding = 1
+              vm.overcommit_memory = 1
+            mode: '0644'
+
+        - name: Apply kernel parameters
+          command: sysctl --system
+          changed_when: false
+
+    - name: Disable swap
+      block:
+        - name: Disable swap memory
+          shell: |
+            swapoff -a
+          when: ansible_memory_mb.swap.total != 0
+
+        - name: Disable swap entries in fstab
+          lineinfile:
+            path: /etc/fstab
+            regexp: '^([^#].*\s+swap\s+.*)$'
+            line: '#\1'
+            backrefs: yes
+          when: ansible_memory_mb.swap.total != 0
+
+    - name: Configure GRUB
+      block:
+        - name: Create GRUB configuration directory
+          file:
+            path: /etc/default/grub.d
+            state: directory
+            mode: '0755'
+
+        - name: Configure GRUB settings
+          copy:
+            dest: /etc/default/grub.d/50-settings.cfg
+            content: |
+              # Set the recordfail timeout
+              GRUB_RECORDFAIL_TIMEOUT=0
+
+              # Do not wait on grub prompt
+              GRUB_TIMEOUT=0
+
+              # Set the default commandline
+              GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0 transparent_hugepage=madvise"
+
+              # Set the grub console type
+              GRUB_TERMINAL=console
+            mode: '0644'
+          register: grub_config
+
+        - name: Update GRUB configuration
+          command: update-grub
+          when: grub_config is changed
+
+    - name: Install etcd network tuning script and udev rule
+      block:
+        - name: Create directory for scripts
+          file:
+            path: /usr/local/sbin
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+
+        - name: Install etcd network tuning script
+          copy:
+            dest: /usr/local/sbin/etcd-network-tuning.sh
+            content: |
+              #!/bin/bash
+
+              export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+              set -o errexit  # exits immediately on any unexpected error (does not bypass traps)
+              set -o nounset  # will error if variables are used without first being defined
+              set -o pipefail # any non-zero exit code in a piped command causes the pipeline to fail with that code
+
+              trap on_exit ERR
+              on_exit() {
+                  echo "Error setting etcd network tuning parameters for interface: ${DEV}" | systemd-cat -p emerg -t etcd-tuning
+              }
+
+              if [ "$#" -ne 1 ]; then
+                  echo "Error: Usage: $0 <dev>" | systemd-cat -p emerg -t etcd-tuning
+                  exit 1
+              fi
+
+              DEV=$1
+
+              echo "Setting etcd network tuning parameters for interface: ${DEV}" | systemd-cat -p info -t etcd-tuning
+              tc qdisc del dev ${DEV} root 2>/dev/null || true
+              tc qdisc add dev ${DEV} root handle 1: prio bands 3
+              tc filter add dev ${DEV} parent 1: protocol ip prio 1 u32 match ip sport 2380 0xffff flowid 1:1
+              tc filter add dev ${DEV} parent 1: protocol ip prio 1 u32 match ip dport 2380 0xffff flowid 1:1
+              tc filter add dev ${DEV} parent 1: protocol ip prio 2 u32 match ip sport 2379 0xffff flowid 1:1
+              tc filter add dev ${DEV} parent 1: protocol ip prio 2 u32 match ip dport 2379 0xffff flowid 1:1
+
+              exit 0
+            mode: '0755'
+            owner: root
+            group: root
+          register: script_install
+
+        - name: Install udev rule for etcd network tuning
+          copy:
+            dest: /etc/udev/rules.d/90-etcd-network-tuning.rules
+            content: |
+              ACTION=="add", SUBSYSTEM=="net", SUBSYSTEMS=="pci|xen|vmbus" RUN+="/usr/local/sbin/etcd-network-tuning.sh $name"
+            mode: '0644'
+            owner: root
+            group: root
+          register: udev_rule_install
+
+        - name: Reload udev rules if changed
+          command: udevadm control --reload-rules
+          when: udev_rule_install.changed
+
+        - name: Trigger udev events for network interfaces if script or rules changed
+          shell: find /sys/class/net -mindepth 1 -maxdepth 1 -type l -name "[a-z]*" -not -name "lo" -printf "%f\n" | xargs -I{} udevadm trigger --action=add --subsystem-match=net --sysname-match={}
+          when: script_install.changed or udev_rule_install.changed
+
+    - name: Mask unnecessary systemd units
+      systemd:
+        name: "{{ item }}"
+        masked: yes
+      loop:
+        - apparmor.service
+
+    # https://philprime.dev/guides/building-a-production-ready-kubernetes-cluster-from-scratch/lesson-8
+    - name: Initialize Kubernetes Control Plane
+      block:
+        - name: Create kubeadm configuration file
+          copy:
+            dest: /root/kubeadm-config.yaml
+            content: |
+              ---
+              apiVersion: kubeadm.k8s.io/v1beta4
+              kind: InitConfiguration
+              nodeRegistration:
+                criSocket: "unix:///var/run/crio/crio.sock"
+              ---
+              apiVersion: kubeadm.k8s.io/v1beta4
+              kind: ClusterConfiguration
+              kubernetesVersion: {{ KUBERNETES_VERSION_FULL }}
+              ---
+              apiVersion: kubelet.config.k8s.io/v1beta1
+              kind: KubeletConfiguration
+              cgroupDriver: systemd
+            mode: '0644'
+
+        - name: Enable and start Kubelet service
+          systemd:
+            name: kubelet
+            enabled: yes
+            state: started
+            daemon_reload: yes
+
+        - name: Enable and start CRI-O service
+          systemd:
+            name: crio
+            enabled: yes
+            state: started
+            daemon_reload: yes
+
+        - name: Check if Kubernetes cluster is already running
+          command: kubectl get nodes
+          register: kubectl_get_nodes
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+          failed_when: false
+          changed_when: false
+
+        - name: Initialize the Kubernetes Control Plane
+          command: kubeadm init --config /root/kubeadm-config.yaml
+          register: kubeadm_init
+          changed_when: true
+          failed_when: kubeadm_init.rc != 0
+          args:
+            creates: /etc/kubernetes/admin.conf
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+          when: kubectl_get_nodes.rc != 0
+
+        - name: Create .kube directory for root user
+          file:
+            path: /root/.kube
+            state: directory
+            owner: root
+            group: root
+            mode: '0700'
+
+        - name: Create symlink from admin.conf to .kube/config
+          file:
+            src: /etc/kubernetes/admin.conf
+            dest: /root/.kube/config
+            state: link
+            force: true
+
+        - name: Check if Control Plane taint exists
+          shell: kubectl get nodes -o jsonpath='{.items[*].spec.taints[?(@.key=="node-role.kubernetes.io/control-plane")].key}'
+          register: taint_check
+          changed_when: false
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+
+        - name: Remove taints from Control Plane nodes
+          command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+          register: remove_taint
+          changed_when: remove_taint.rc == 0
+          failed_when: false
+          when: taint_check.stdout | length > 0
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+
+      # TODO: https://github.com/cloudnativelabs/kube-router/blob/master/docs/kubeadm.md
+
+    - name: Handle system reboot check
+      block:
+        - name: Check if reboot is required
+          stat:
+            path: /var/run/reboot-required
+          register: reboot_required_file
+
+        - name: Print reboot status
+          debug:
+            msg: "System reboot is required"
+          when: reboot_required_file.stat.exists
+      when: system_upgraded is success
