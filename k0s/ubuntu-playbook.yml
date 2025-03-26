@@ -498,8 +498,6 @@
             mode: '0755'
 
         - name: Generate k0s configuration
-          # FeatureGates:
-          #  - https://kubernetes.io/docs/tasks/configure-pod-container/image-volumes/
           shell: |
             if [ ! -f /root/k0s.yaml ]; then
               {% if registry_mirror | default("") | length > 0 %}
@@ -509,6 +507,19 @@
                 .spec.telemetry.enabled = false |
                 .spec.network.provider = "calico" |
                 .spec.extensions.helm.concurrencyLevel = 3 |
+                .spec.extensions.helm.repositories = [
+                  {
+                    "name": "metallb",
+                    "url": "https://metallb.github.io/metallb"
+                  }
+                ] |
+                .spec.extensions.helm.charts = [
+                  {
+                    "name": "metallb",
+                    "chartname": "metallb/metallb",
+                    "namespace": "metallb"
+                  }
+                ] |
                 .spec.api.sans |= [
                   .[] |
                   select(
@@ -523,6 +534,19 @@
                 .spec.telemetry.enabled = false |
                 .spec.network.provider = "calico" |
                 .spec.extensions.helm.concurrencyLevel = 3 |
+                .spec.extensions.helm.repositories = [
+                  {
+                    "name": "metallb",
+                    "url": "https://metallb.github.io/metallb"
+                  }
+                ] |
+                .spec.extensions.helm.charts = [
+                  {
+                    "name": "metallb",
+                    "chartname": "metallb/metallb",
+                    "namespace": "metallb"
+                  }
+                ] |
                 .spec.api.sans |= [
                   .[] |
                   select(
@@ -573,7 +597,7 @@
         - name: Install k0s as a Controller
           shell: |
             if [ ! -f /etc/systemd/system/k0scontroller.service ]; then
-              k0s install controller -c /root/k0s.yaml --enable-worker --no-taints --disable-components konnectivity-server --verbose
+              k0s install controller -c /root/k0s.yaml --enable-worker --no-taints --disable-components konnectivity-server --kubelet-root-dir=/var/lib/kubelet --verbose
             fi
           args:
             executable: /bin/bash
@@ -589,7 +613,7 @@
         - name: Install k0s as a Worker with token
           shell: |
             if [ ! -f /etc/systemd/system/k0sworker.service ]; then
-              k0s install worker --token-file=/root/k0s-token --verbose
+              k0s install worker --token-file=/root/k0s-token --kubelet-root-dir=/var/lib/kubele --verbose
             fi
           args:
             executable: /bin/bash

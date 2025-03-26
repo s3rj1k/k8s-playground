@@ -360,8 +360,6 @@
             mode: '0755'
 
         - name: Create k0s configuration script
-          # FeatureGates:
-          #  - https://kubernetes.io/docs/tasks/configure-pod-container/image-volumes/
           copy:
             dest: /root/k0s.py
             content: |
@@ -400,9 +398,12 @@
                   config['spec']['images']['repository'] = registry_mirror
 
               # Disable telemetry
+              if 'telemetry' not in config['spec']:
+                  config['spec']['telemetry'] = {}
+
               config['spec']['telemetry']['enabled'] = False
 
-              # Set network provider to calico
+              # Set network provider to Calico
               if 'network' not in config['spec']:
                   config['spec']['network'] = {}
               config['spec']['network']['provider'] = 'calico'
@@ -422,6 +423,52 @@
                           filtered_sans.append(san)
 
                   config['spec']['api']['sans'] = filtered_sans
+
+              # Add Helm extension configuration
+              if 'extensions' not in config['spec']:
+                  config['spec']['extensions'] = {}
+
+              if 'helm' not in config['spec']['extensions']:
+                  config['spec']['extensions']['helm'] = {}
+
+              if 'repositories' not in config['spec']['extensions']['helm']:
+                  config['spec']['extensions']['helm']['repositories'] = []
+
+              if 'charts' not in config['spec']['extensions']['helm']:
+                  config['spec']['extensions']['helm']['charts'] = []
+
+              # Add MetalLB repository
+              metallb_repo = {
+                  'name': 'metallb',
+                  'url': 'https://metallb.github.io/metallb'
+              }
+
+              # Check if the repository already exists
+              repo_exists = False
+              for repo in config['spec']['extensions']['helm']['repositories']:
+                  if repo.get('name') == 'metallb':
+                      repo_exists = True
+                      break
+
+              if not repo_exists:
+                  config['spec']['extensions']['helm']['repositories'].append(metallb_repo)
+
+              # Add MetalLB chart
+              metallb_chart = {
+                  'name': 'metallb',
+                  'chartname': 'metallb/metallb',
+                  'namespace': 'metallb'
+              }
+
+              # Check if the chart already exists
+              chart_exists = False
+              for chart in config['spec']['extensions']['helm']['charts']:
+                  if chart.get('name') == 'metallb' and chart.get('namespace') == 'metallb':
+                      chart_exists = True
+                      break
+
+              if not chart_exists:
+                  config['spec']['extensions']['helm']['charts'].append(metallb_chart)
 
               # Write the modified config to file
               with open(k0s_config_path, 'w') as f:
@@ -471,7 +518,7 @@
         - name: Install k0s as a Controller
           shell: |
             if [ ! -f /etc/systemd/system/k0scontroller.service ]; then
-              k0s install controller -c /root/k0s.yaml --enable-worker --no-taints --disable-components konnectivity-server --verbose
+              k0s install controller -c /root/k0s.yaml --enable-worker --no-taints --disable-components konnectivity-server --kubelet-root-dir=/var/lib/kubelet --verbose
             fi
           args:
             executable: /bin/bash
@@ -487,7 +534,7 @@
         - name: Install k0s as a Worker with token
           shell: |
             if [ ! -f /etc/systemd/system/k0sworker.service ]; then
-              k0s install worker --token-file=/root/k0s-token --verbose
+              k0s install worker --token-file=/root/k0s-token --kubelet-root-dir=/var/lib/kubele --verbose
             fi
           args:
             executable: /bin/bash
