@@ -429,9 +429,14 @@
             mode: '0644'
           register: grub_config
 
+        - name: Check if /boot/grub directory exists
+          stat:
+            path: /boot/grub
+          register: grub_dir
+
         - name: Update GRUB configuration
           command: update-grub
-          when: grub_config is changed
+          when: grub_config is changed and grub_dir.stat.exists
 
     - name: Install etcd network tuning script and udev rule
       block:

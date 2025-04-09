@@ -1,0 +1,6 @@
+#!/bin/bash
+
+set -x
+
+# `apt-mark showauto` - ref: https://github.com/systemd/mkosi/issues/3659
+cp /var/lib/apt/extended_states $BUILDROOT/var/lib/apt/

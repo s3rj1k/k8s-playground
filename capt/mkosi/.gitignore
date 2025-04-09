@@ -1,0 +1,11 @@
+*.tar.xz
+*.raw
+*.raw.*
+.mkosi-*
+*spawn.nspawn
+mkosi.cache/
+mkosi.builddir/
+*.cache-pre-dev
+*.cache-pre-inst
+image.*
+debian.*
