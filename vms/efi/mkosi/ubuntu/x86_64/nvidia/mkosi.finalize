@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -x
+
+# Set root password
+echo 'root:root' | chroot "$BUILDROOT" chpasswd
+
+# Get Kubelet version out from built image
+cp -av "$BUILDROOT/kubelet.version" "$OUTPUTDIR/"

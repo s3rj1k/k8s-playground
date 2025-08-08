@@ -1,0 +1,9 @@
+# wget https://baltocdn.com/helm/signing.asc -O /etc/apt/keyrings/helm.asc
+X-Repolib-Name: helm
+Types: deb
+URIs: https://baltocdn.com/helm/stable/debian/
+Signed-By: /etc/apt/keyrings/helm.asc
+Suites: all
+Architectures: amd64
+Components: main
+Enabled: yes
