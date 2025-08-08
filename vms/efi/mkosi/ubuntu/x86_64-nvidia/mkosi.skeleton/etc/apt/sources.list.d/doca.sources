@@ -1,0 +1,4 @@
+Types: deb
+URIs: https://linux.mellanox.com/public/repo/doca/DGX_latest_DOCA/ubuntu24.04/x86_64/
+Suites: /
+Signed-By: /etc/apt/keyrings/GPG-KEY-Mellanox.gpg

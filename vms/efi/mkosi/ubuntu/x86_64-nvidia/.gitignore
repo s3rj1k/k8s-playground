@@ -1,0 +1,12 @@
+*.tar.xz
+*.raw
+*.raw.*
+*.vm
+*.vm.*
+.mkosi-*
+*spawn.nspawn
+mkosi.cache/
+mkosi.builddir/
+*.cache-pre-dev
+*.cache-pre-inst
+*.version

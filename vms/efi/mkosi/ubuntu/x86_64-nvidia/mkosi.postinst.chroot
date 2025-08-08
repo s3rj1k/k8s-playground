@@ -1,0 +1,114 @@
+#!/bin/bash
+
+set -x
+
+# `apt-mark showauto` - ref: https://github.com/systemd/mkosi/issues/3659
+# cp /var/lib/apt/extended_states $BUILDROOT/var/lib/apt/
+
+# Mask systemd services
+systemctl mask auditd.service
+systemctl mask chronyd.service
+systemctl mask connman.service
+systemctl mask display-manager.service
+systemctl mask firewalld.service
+systemctl mask lxd-installer.socket
+systemctl mask ModemManager.service
+systemctl mask NetworkManager.service
+systemctl mask plymouth-quit-wait.service
+systemctl mask plymouth-quit.service
+systemctl mask plymouth-read-write.service
+systemctl mask plymouth-start.service
+systemctl mask snapd.mounts-pre.target
+systemctl mask snapd.seeded.service
+systemctl mask syslog.service
+systemctl mask systemd-homed.service
+systemctl mask systemd-userdbd.service
+systemctl mask systemd-userdbd.socket
+systemctl mask ufw.service
+systemctl mask docker.service
+systemctl mask containerd.service
+systemctl mask crio.service
+systemctl mask kubelet.service
+
+# Enable systemd services
+systemctl enable multipathd.service
+systemctl enable ssh.service
+systemctl enable systemd-networkd.service
+systemctl enable systemd-resolved.service
+
+# Disable swap
+sed -i 's/^\([^#].*[[:space:]]\+swap[[:space:]]\+.*\)$/#\1/' /etc/fstab
+
+# Tweak SSHD config
+if [ -e /etc/ssh/sshd_config ]; then
+	sed -i -e 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+	sed -i -e 's/^PermitRootLogin .*/PermitRootLogin without-password/' /etc/ssh/sshd_config
+fi
+
+# Cleanup directories
+cleanup_dirs=(
+	dev
+	proc
+	run
+	sys
+	tmp
+	var/cache/apt
+	var/lib/apt/lists
+	var/tmp
+)
+for i in "${cleanup_dirs[@]}"; do
+	find /$i -mindepth 1 -depth -delete
+done
+
+# Cleanup files
+cleanup_files=(
+	etc/apt/sources.list.d/localdebs.list
+	etc/mailname
+	etc/ssh/ssh_host_*
+	var/lib/dbus/machine-id
+	var/log/alternatives.log
+	var/log/apt
+	var/log/bootstrap.log
+	var/log/dpkg.log
+	var/log/install_packages.list
+)
+for i in "${cleanup_files[@]}"; do
+	find /$i -depth -delete || :
+done
+
+# Empty out files
+empty_files=(
+	etc/hostname
+	etc/machine-id
+	var/lib/dpkg/available
+)
+for i in "${empty_files[@]}"; do
+	> /$i
+done
+
+# Remove documentation
+find /usr/share/doc -type f ! -name "copyright" -delete
+find /usr/share/man -type f -delete
+find /usr/share/groff -type f -delete
+find /usr/share/info -type f -delete
+find /usr/share/lintian -type f -delete
+find /usr/share/linda -type f -delete
+
+# Remove locales except English
+find /usr/share/locale -type f -not -path "/usr/share/locale/en*" -delete
+
+# Clean up empty directories
+find /usr/share/doc -type d -empty -delete
+find /usr/share/man -type d -empty -delete
+find /usr/share/groff -type d -empty -delete
+find /usr/share/info -type d -empty -delete
+find /usr/share/lintian -type d -empty -delete
+find /usr/share/linda -type d -empty -delete
+find /usr/share/locale -type d -empty -delete
+
+# Prepare locale
+locale-gen
+
+# Clean apt cache
+rm -vrf /var/lib/apt/lists /var/cache/apt
+apt clean

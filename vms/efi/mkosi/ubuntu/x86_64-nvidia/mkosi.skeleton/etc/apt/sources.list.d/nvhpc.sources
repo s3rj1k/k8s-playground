@@ -1,0 +1,4 @@
+Types: deb
+URIs: https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64/
+Suites: /
+Signed-By: /etc/apt/keyrings/nvidia-hpcsdk-archive-keyring.gpg

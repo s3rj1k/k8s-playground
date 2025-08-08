@@ -1,0 +1,3 @@
+Package: *
+Pin: release l=NVIDIA HPC SDK
+Pin-Priority: 600

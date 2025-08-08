@@ -1,0 +1,6 @@
+#!/bin/bash
+
+set -x
+
+# Set root password
+echo 'root:root' | chroot "$BUILDROOT" chpasswd
