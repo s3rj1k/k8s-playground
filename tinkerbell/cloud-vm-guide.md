@@ -66,8 +66,8 @@ Replace `<bridge_name>` with your bridge network name:
 sudo virt-install \
   --name vm \
   --description "Ubuntu Cloud VM" \
-  --vcpus 2 \
-  --ram 2048 \
+  --vcpus 4 \
+  --ram 8192 \
   --os-variant ubuntu22.04 \
   --disk path=/var/lib/libvirt/images/vm-disk.qcow2,bus=virtio \
   --disk path=/tmp/cloud-init-vm.iso,device=cdrom \
@@ -104,11 +104,3 @@ virsh undefine vm --remove-all-storage --nvram --snapshots-metadata --managed-sa
 # Remove temporary files
 rm -f /tmp/user-data /tmp/meta-data /tmp/cloud-init-vm.iso
 ```
-
-## Notes
-
-- The VM uses VNC graphics by default
-- Cloud-init will configure the system on first boot
-- The disk is automatically resized to 20GB
-- SSH password authentication is enabled for convenience
-- The ubuntu user has passwordless sudo access

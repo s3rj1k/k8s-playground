@@ -3,23 +3,16 @@
 # Copyright 2025 s3rj1k
 # SPDX-License-Identifier: MIT
 
-# Tinkerbell Lab Setup Script
+# Tinkerbell Lab Setup Script - Redfish/EFI Only (AMD64)
 #
 # Lint: shfmt -w -s -ci -sr -kp -fn tinkerbell-lab.sh
 # Commit to gist: git commit --allow-empty-message -S -am ''
-#
-# Example: Override Helm chart repo, version and HookOS
-#   export TINKERBELL_CHART_REPO="oci://ghcr.io/bellfork/charts/tinkerbell"
-#   export TINKERBELL_CHART_VERSION="v0.0.0-b4103e2"
-#   export HOOKOS_DOWNLOAD_URL=https://github.com/bellfork/CI/releases/download/v0.11.1-abe190b
-#   ./tinkerbell-lab.sh
 #
 # Refs:
 #   - https://github.com/tinkerbell/tinkerbell/blob/main/helm/tinkerbell/README.md
 #   - https://github.com/tinkerbell/tinkerbell/blob/main/docs/technical/rufio/README.md#job-api
 #   - https://github.com/tinkerbell/tinkerbell/blob/main/docs/technical/BOOT_MODES.md#customboot
 #   - https://github.com/tinkerbell/playground/
-#   - https://github.com/s3rj1k/libvirt-ipmi (for IPMI and Sushy emulator daemons)
 #
 
 set -euo pipefail
@@ -28,7 +21,6 @@ set -euo pipefail
 parse_args()
 {
 	CLEANUP_ONLY=false
-	ENABLE_VM=""
 
 	while [[ $# -gt 0 ]]; do
 		case $1 in
@@ -36,16 +28,11 @@ parse_args()
 				CLEANUP_ONLY=true
 				shift
 				;;
-			--enable-and-attach)
-				ENABLE_VM="$2"
-				shift 2
-				;;
 			-h | --help)
 				echo "Usage: $0 [OPTIONS]"
 				echo "Options:"
-				echo "  --cleanup-only                 Only perform cleanup and exit"
-				echo "  --enable-and-attach <vm_name>  Enable workflow for VM and attach to console"
-				echo "  -h, --help                     Show this help message"
+				echo "  --cleanup-only     Only perform cleanup and exit"
+				echo "  -h, --help         Show this help message"
 				exit 0
 				;;
 			*)
@@ -62,7 +49,7 @@ set_config()
 {
 	# KinD Configuration
 	KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kind}"
-	IMAGE_REGISTRY="${IMAGE_REGISTRY:-dockerproxy.artifactory-eu.mcp.mirantis.net}"
+	IMAGE_REGISTRY="${IMAGE_REGISTRY:-}"
 
 	# CNI Configuration (calico, kube-router)
 	CNI_PROVIDER="${CNI_PROVIDER:-calico}"
@@ -78,20 +65,13 @@ set_config()
 	HOOKOS_ISO_URL="${HOOKOS_DOWNLOAD_URL}/hook-latest-lts-x86_64-efi-initrd.iso"
 
 	# Template names
-	TEMPLATE_NAME_KEXEC="ubuntu-kexec"
-	TEMPLATE_NAME_NOKEXEC="ubuntu-nokexec"
+	TEMPLATE_NAME="ubuntu-nokexec"
 
 	# VM Configuration
 	VM1_NAME="vm1"
 	VM1_MAC="52:54:00:12:34:01"
 	VM2_NAME="vm2"
 	VM2_MAC="52:54:00:12:34:02"
-	VM3_NAME="vm3"
-	VM3_MAC="52:54:00:12:34:03"
-
-	# BMC Configuration
-	BMC_PORT="623"
-	BMC_PASS_BASE64=$(cat ~/.ipmi_password | base64)
 
 	# Redfish Configuration
 	REDFISH_PORT="8000"
@@ -126,7 +106,6 @@ check_prerequisites()
 	local required_services=(
 		"docker"
 		"libvirtd"
-		"libvirt-ipmi"
 		"sushy-emulator"
 	)
 
@@ -311,12 +290,10 @@ set_network_ips()
 
 	NETWORK_BASE=$(echo "$KIND_GATEWAY" | awk -F"." '{print $1"."$2"."$3}')
 
-	BMC_IP="$KIND_GATEWAY"
 	REDFISH_IP="$KIND_GATEWAY"
 	GATEWAY_IP="$KIND_GATEWAY"
 	NODE_IP_BASE="${NETWORK_BASE}.200"
 
-	echo -e "\nBMC IP: $BMC_IP"
 	echo "Gateway IP: $GATEWAY_IP"
 	echo "Node IP Base: $NODE_IP_BASE"
 }
@@ -441,7 +418,6 @@ install_tinkerbell()
 		--set "trustedProxies={${TRUSTED_PROXIES}}" \
 		--set "publicIP=$TINKERBELL_LB_IP" \
 		--set "artifactsFileServer=$TINKERBELL_ARTIFACTS_SERVER" \
-		--set "optional.hookos.downloadURL=$HOOKOS_DOWNLOAD_URL" \
 		--set "deployment.envs.smee.isoUpstreamURL=$HOOKOS_ISO_URL" \
 		--set "deployment.envs.smee.ipxeHttpScriptExtraKernelArgs={console=tty0,console=ttyS0\,115200n8,linuxkit.runc_console=1,linuxkit.runc_debug=1}" \
 		--set "deployment.envs.smee.osieURL=http://${TINKERBELL_LB_IP}:7171" \
@@ -452,29 +428,6 @@ install_tinkerbell()
 
 	echo "Tinkerbell ${TINKERBELL_CHART_VERSION} installed successfully from ${TINKERBELL_CHART_REPO}"
 	echo "HookOS ISO upstream URL: $HOOKOS_ISO_URL"
-}
-
-# Create BMC machine secret (IPMI)
-create_bmc_secret()
-{
-	local node_name=$1
-	local bmc_user_base64=$(echo -n "$node_name" | base64)
-
-	echo -e "\nCreating BMC secret: $node_name"
-
-	cat << EOF | kubectl apply -f -
-apiVersion: v1
-data:
-  password: $BMC_PASS_BASE64
-  username: $bmc_user_base64
-kind: Secret
-metadata:
-  name: $node_name
-  namespace: $NAMESPACE
-type: kubernetes.io/basic-auth
-EOF
-
-	echo "BMC secret created for $node_name"
 }
 
 # Create BMC machine secret (Redfish)
@@ -498,38 +451,6 @@ type: kubernetes.io/basic-auth
 EOF
 
 	echo "Redfish BMC secret created for $node_name"
-}
-
-# Create BMC machine for a VM (IPMI)
-create_bmc_machine()
-{
-	local node_name=$1
-
-	echo -e "\nCreating BMC machine: $node_name"
-
-	cat << EOF | kubectl apply -f -
-apiVersion: bmc.tinkerbell.org/v1alpha1
-kind: Machine
-metadata:
-  name: $node_name
-  namespace: $NAMESPACE
-spec:
-  connection:
-    authSecretRef:
-      name: $node_name
-      namespace: $NAMESPACE
-    host: $BMC_IP
-    insecureTLS: true
-    port: $BMC_PORT
-    providerOptions:
-      preferredOrder:
-        - ipmitool
-      ipmitool:
-        cipherSuite: "3"
-        port: $BMC_PORT
-EOF
-
-	echo "BMC machine created for $node_name"
 }
 
 # Create BMC machine for a VM (Redfish)
@@ -571,9 +492,8 @@ create_hardware()
 	local node_name=$2
 	local node_mac=$3
 	local ip_offset=$4
-	local uefi_enabled=$5
 
-	echo -e "\nCreating hardware configuration for $node_name (role: $node_role, UEFI: $uefi_enabled)"
+	echo -e "\nCreating hardware configuration for $node_name (role: $node_role)"
 
 	local node_ip=$(awk -F"." '{print $1"."$2"."$3"."($4+'$ip_offset')}' <<< "$NODE_IP_BASE")
 
@@ -602,7 +522,7 @@ spec:
           netmask: 255.255.255.0
         lease_time: 4294967294
         mac: $node_mac
-        uefi: $uefi_enabled
+        uefi: true
         name_servers:
           - 8.8.8.8
           - 1.1.1.1
@@ -631,7 +551,7 @@ spec:
         version: "22.04"
 EOF
 
-	echo "Hardware configuration created for $node_name (IP: $node_ip, UEFI: $uefi_enabled)"
+	echo "Hardware configuration created for $node_name (IP: $node_ip)"
 }
 
 # Create a VM
@@ -639,20 +559,8 @@ create_vm()
 {
 	local node_name=$1
 	local mac_address=$2
-	local uefi_enabled=$3
 
-	local boot_options
-	local graphics_options
-
-	if [ "$uefi_enabled" = true ]; then
-		boot_options="uefi,firmware.feature0.name=enrolled-keys,firmware.feature0.enabled=no,firmware.feature1.name=secure-boot,firmware.feature1.enabled=yes"
-		graphics_options="vnc,listen=0.0.0.0"
-		echo -e "\nCreating UEFI VM: $node_name with MAC: $mac_address"
-	else
-		boot_options="network,hd,bootmenu.enable=on,bios.useserial=on"
-		graphics_options="vnc,listen=0.0.0.0"
-		echo -e "\nCreating Legacy VM: $node_name with MAC: $mac_address"
-	fi
+	echo -e "\nCreating VM: $node_name with MAC: $mac_address"
 
 	virt-install \
 		--name "$node_name" \
@@ -661,16 +569,16 @@ create_vm()
 		--ram "2048" \
 		--os-variant "ubuntu22.04" \
 		--connect "qemu:///system" \
-		--disk "path=/var/lib/libvirt/images/${node_name}-disk.img,bus=virtio,size=10,sparse=yes" \
+		--disk "path=/var/lib/libvirt/images/${node_name}-disk.img,bus=virtio,size=25,sparse=yes" \
 		--disk "device=cdrom,bus=sata" \
 		--network "bridge:$BRIDGE_NAME,mac=$mac_address" \
 		--console "pty,target.type=virtio" \
 		--serial "pty" \
-		--graphics "$graphics_options" \
+		--graphics "vnc,listen=0.0.0.0" \
 		--import \
 		--noautoconsole \
 		--noreboot \
-		--boot "$boot_options"
+		--boot "uefi,firmware.feature0.name=enrolled-keys,firmware.feature0.enabled=no,firmware.feature1.name=secure-boot,firmware.feature1.enabled=yes"
 
 	echo "VM $node_name created"
 }
@@ -680,42 +588,33 @@ create_vms()
 {
 	echo -e "\nCreating VMs and BMC resources for Tinkerbell provisioning ..."
 
-	# VM1 - Legacy BIOS with IPMI
-	create_vm "$VM1_NAME" "$VM1_MAC" false
-	create_bmc_secret "$VM1_NAME"
-	create_bmc_machine "$VM1_NAME"
-	create_hardware "control-plane" "$VM1_NAME" "$VM1_MAC" 1 false
+	# VM1 - netboot mode
+	create_vm "$VM1_NAME" "$VM1_MAC"
+	create_redfish_secret "$VM1_NAME"
+	create_redfish_machine "$VM1_NAME"
+	create_hardware "control-plane" "$VM1_NAME" "$VM1_MAC" 1
 
-	# VM2 - UEFI with IPMI
-	create_vm "$VM2_NAME" "$VM2_MAC" true
-	create_bmc_secret "$VM2_NAME"
-	create_bmc_machine "$VM2_NAME"
-	create_hardware "worker" "$VM2_NAME" "$VM2_MAC" 2 true
-
-	# VM3 - UEFI with Redfish
-	create_vm "$VM3_NAME" "$VM3_MAC" true
-	create_redfish_secret "$VM3_NAME"
-	create_redfish_machine "$VM3_NAME"
-	create_hardware "worker" "$VM3_NAME" "$VM3_MAC" 3 true
+	# VM2 - CD boot mode
+	create_vm "$VM2_NAME" "$VM2_MAC"
+	create_redfish_secret "$VM2_NAME"
+	create_redfish_machine "$VM2_NAME"
+	create_hardware "worker" "$VM2_NAME" "$VM2_MAC" 2
 
 	echo -e "\nVMs and BMC resources created successfully:"
-	echo "VM1: $VM1_NAME ($VM1_MAC) - Legacy Boot with IPMI BMC"
-	echo "VM2: $VM2_NAME ($VM2_MAC) - UEFI Boot with IPMI BMC"
-	echo "VM3: $VM3_NAME ($VM3_MAC) - UEFI Boot with Redfish BMC"
+	echo "VM1: $VM1_NAME ($VM1_MAC) - netboot mode with Redfish BMC"
+	echo "VM2: $VM2_NAME ($VM2_MAC) - CD boot mode with Redfish BMC"
 	echo "Bridge: $BRIDGE_NAME"
-	echo "BMC IP: $BMC_IP (Port: $BMC_PORT)"
 	echo "Redfish IP: $REDFISH_IP (Port: $REDFISH_PORT)"
 	echo "Gateway IP: $GATEWAY_IP"
 	echo "Node IP Base: $NODE_IP_BASE"
 }
 
-# Create Ubuntu Template for Tinkerbell
+# Create Ubuntu Template for Tinkerbell (no-kexec)
 create_template()
 {
-	local enable_kexec=$1
-	local template_name=$2
+	local template_name=$1
 
-	echo -e "\nCreating Template: $template_name for Tinkerbell (kexec: $enable_kexec) ..."
+	echo -e "\nCreating Template: $template_name for Tinkerbell (no-kexec) ..."
 
 	# Build the actions array
 	local actions_yaml=""
@@ -808,23 +707,6 @@ create_template()
               MODE: 0644
               DIRMODE: 0755'
 
-	# Conditionally add Kexec action
-	if [ "$enable_kexec" = "true" ]; then
-		actions_yaml+='
-
-          - name: "Kexec Into OS"
-            image: ghcr.io/jacobweinstock/waitdaemon:latest
-            timeout: 90
-            pid: host
-            environment:
-              BLOCK_DEVICE: {{ formatPartition ( index .Hardware.Disks 0 ) 1 }}
-              FS_TYPE: ext4
-              IMAGE: quay.io/tinkerbell/actions/kexec:latest
-              WAIT_SECONDS: 10
-            volumes:
-              - /var/run/docker.sock:/var/run/docker.sock'
-	fi
-
 	# Create the complete YAML
 	cat << EOF | kubectl apply -f -
 apiVersion: "tinkerbell.org/v1alpha1"
@@ -850,17 +732,15 @@ EOF
 	echo "Template $template_name created successfully"
 }
 
-# Create templates
+# Create template
 create_templates()
 {
-	echo -e "\nCreating templates ..."
+	echo -e "\nCreating template ..."
 
-	create_template true "$TEMPLATE_NAME_KEXEC"
-	create_template false "$TEMPLATE_NAME_NOKEXEC"
+	create_template "$TEMPLATE_NAME"
 
-	echo -e "\nTemplates created successfully:"
-	echo "  - $TEMPLATE_NAME_KEXEC (with kexec step)"
-	echo "  - $TEMPLATE_NAME_NOKEXEC (without kexec step)"
+	echo -e "\nTemplate created successfully:"
+	echo "  - $TEMPLATE_NAME (no-kexec)"
 }
 
 # Create image download resources
@@ -958,47 +838,15 @@ wait_for_image_download()
 	fi
 }
 
-# Create a single workflow for a VM (netboot mode)
-create_workflow_netboot()
-{
-	local vm_name=$1
-	local vm_mac=$2
-	local template_name=$3
-
-	echo -e "\nCreating netboot workflow for $vm_name using template $template_name ..."
-	echo "Boot mode: netboot (PXE/iPXE network boot)"
-
-	cat << EOF | kubectl apply -f -
-apiVersion: "tinkerbell.org/v1alpha1"
-kind: Workflow
-metadata:
-  name: ${vm_name}-netboot-workflow
-  namespace: $NAMESPACE
-spec:
-  disabled: true
-  templateRef: $template_name
-  hardwareRef: $vm_name
-  hardwareMap:
-    device_1: $vm_mac
-  bootOptions:
-    toggleAllowNetboot: true
-    bootMode: netboot
-EOF
-
-	echo "Netboot workflow ${vm_name}-netboot-workflow created with template $template_name"
-}
-
 # Create a single workflow for a VM (customboot mode)
 create_workflow_customboot()
 {
 	local vm_name=$1
 	local vm_mac=$2
 	local template_name=$3
-	local efi_boot=${4:-true}
 
 	echo -e "\nCreating customboot workflow for $vm_name using template $template_name ..."
 	echo "Boot mode: customboot (Custom boot sequence with power/boot device control)"
-	echo "EFI Boot: $efi_boot"
 
 	cat << EOF | kubectl apply -f -
 apiVersion: "tinkerbell.org/v1alpha1"
@@ -1019,18 +867,18 @@ spec:
       - powerAction: "off"
       - bootDevice:
           device: "pxe"
-          efiBoot: $efi_boot
+          efiBoot: true
       - powerAction: "on"
       postActions:
       - powerAction: "off"
       - bootDevice:
           device: "disk"
           persistent: true
-          efiBoot: $efi_boot
+          efiBoot: true
       - powerAction: "on"
 EOF
 
-	echo "Customboot workflow ${vm_name}-customboot-workflow created with template $template_name (EFI: $efi_boot)"
+	echo "Customboot workflow ${vm_name}-customboot-workflow created with template $template_name"
 }
 
 # Create a single workflow for a VM (isoboot mode with Redfish BMC)
@@ -1067,83 +915,16 @@ EOF
 	echo "ISO URL: http://${TINKERBELL_LB_IP}:7171/iso/${mac_dashed}/hook.iso"
 }
 
-# Enable workflow and attach to VM console
-enable_vm_and_attach()
-{
-	local vm_name=$1
-	if [ -z "$vm_name" ]; then
-		echo "Error: VM name is required"
-		exit 1
-	fi
-
-	# Determine which workflow exists for this VM
-	local workflow_name=""
-	local netboot_workflow="${vm_name}-netboot-workflow"
-	local customboot_workflow="${vm_name}-customboot-workflow"
-	local isoboot_workflow="${vm_name}-isoboot-workflow"
-
-	if kubectl -n $NAMESPACE get workflow "$netboot_workflow" &> /dev/null; then
-		workflow_name="$netboot_workflow"
-		echo "Found netboot workflow: $workflow_name"
-	elif kubectl -n $NAMESPACE get workflow "$customboot_workflow" &> /dev/null; then
-		workflow_name="$customboot_workflow"
-		echo "Found customboot workflow: $workflow_name"
-	elif kubectl -n $NAMESPACE get workflow "$isoboot_workflow" &> /dev/null; then
-		workflow_name="$isoboot_workflow"
-		echo "Found isoboot workflow: $workflow_name"
-	else
-		echo "Error: No workflow found for VM $vm_name"
-		echo "Expected workflows: $netboot_workflow, $customboot_workflow, or $isoboot_workflow"
-		exit 1
-	fi
-
-	echo "Enabling workflow $workflow_name for $vm_name ..."
-	if ! kubectl -n $NAMESPACE patch workflow "$workflow_name" --type='merge' -p '{"spec":{"disabled":false}}'; then
-		echo "Error: Failed to enable workflow $workflow_name"
-		exit 1
-	fi
-
-	echo -e "\nWaiting up to 60 seconds for VM $vm_name to autostart ..."
-	local timeout=60
-	local start_time=$(date +%s)
-	local vm_started=false
-
-	while true; do
-		local elapsed=$(($(date +%s) - start_time))
-
-		if virsh domstate "$vm_name" 2> /dev/null | grep -q "running"; then
-			vm_started=true
-			break
-		fi
-
-		if [ $elapsed -ge $timeout ]; then
-			break
-		fi
-	done
-
-	if [ "$vm_started" = true ]; then
-		virsh console "$vm_name"
-	else
-		echo -e "\nVM $vm_name did not autostart, starting manually ..."
-		if ! virsh start "$vm_name" --console; then
-			echo "Error: Failed to start VM $vm_name manually"
-			exit 1
-		fi
-	fi
-}
-
 create_workflows()
 {
 	echo -e "\nCreating Tinkerbell workflows for VM provisioning ..."
 
-	create_workflow_netboot "$VM1_NAME" "$VM1_MAC" "$TEMPLATE_NAME_KEXEC"
-	create_workflow_customboot "$VM2_NAME" "$VM2_MAC" "$TEMPLATE_NAME_NOKEXEC" true
-	create_workflow_isoboot "$VM3_NAME" "$VM3_MAC" "$TEMPLATE_NAME_KEXEC"
+	create_workflow_customboot "$VM1_NAME" "$VM1_MAC" "$TEMPLATE_NAME"
+	create_workflow_isoboot "$VM2_NAME" "$VM2_MAC" "$TEMPLATE_NAME"
 
 	echo -e "\nWorkflows created successfully:"
-	echo "${VM1_NAME}-netboot-workflow (netboot) -> Hardware: $VM1_NAME (MAC: $VM1_MAC) -> Template: $TEMPLATE_NAME_KEXEC"
-	echo "${VM2_NAME}-customboot-workflow (customboot) -> Hardware: $VM2_NAME (MAC: $VM2_MAC) -> Template: $TEMPLATE_NAME_NOKEXEC"
-	echo "${VM3_NAME}-isoboot-workflow (isoboot) -> Hardware: $VM3_NAME (MAC: $VM3_MAC) -> Template: $TEMPLATE_NAME_KEXEC"
+	echo "${VM1_NAME}-customboot-workflow (customboot) -> Hardware: $VM1_NAME (MAC: $VM1_MAC) -> Template: $TEMPLATE_NAME"
+	echo "${VM2_NAME}-isoboot-workflow (isoboot/cdboot) -> Hardware: $VM2_NAME (MAC: $VM2_MAC) -> Template: $TEMPLATE_NAME"
 	echo "Status: Disabled (workflows will not run until enabled)"
 }
 
@@ -1154,11 +935,6 @@ main()
 
 	check_prerequisites
 	set_config
-
-	if [ -n "$ENABLE_VM" ]; then
-		enable_vm_and_attach "$ENABLE_VM"
-		exit 0
-	fi
 
 	cleanup_all
 	if [ "$CLEANUP_ONLY" = true ]; then
@@ -1198,30 +974,19 @@ main()
 
 	echo -e "\nLAB setup complete!"
 
-	echo -e "\nDebug Libvirt-IPMI:"
-	echo -e "\tdocker run --rm -it --network kind alpine sh -c \"apk add --no-cache ipmitool && ipmitool -I lanplus -H $GATEWAY_IP -P $(echo $BMC_PASS_BASE64 | base64 -d) -U cirros mc info\""
-
-	echo -e "\nDebug Redfish BMC:"
+	echo -e "\nDebug Redfish BMC (Sushy Tools):"
 	echo -e "\tcurl -k -u admin:$(echo $REDFISH_PASS_BASE64 | base64 -d) https://$REDFISH_IP:$REDFISH_PORT/redfish/v1/Systems/"
 
 	echo -e "\nMonitor workflows:"
 	echo -e "\tkubectl -n $NAMESPACE get workflows"
 
 	echo -e "\nTo enable and start provisioning:"
-	echo -e "\tkubectl -n $NAMESPACE patch workflow ${VM1_NAME}-netboot-workflow --type='merge' -p '{\"spec\":{\"disabled\":false}}'"
-	echo -e "\tkubectl -n $NAMESPACE patch workflow ${VM2_NAME}-customboot-workflow --type='merge' -p '{\"spec\":{\"disabled\":false}}'"
-	echo -e "\tkubectl -n $NAMESPACE patch workflow ${VM3_NAME}-isoboot-workflow --type='merge' -p '{\"spec\":{\"disabled\":false}}'"
+	echo -e "\tkubectl -n $NAMESPACE patch workflow ${VM1_NAME}-customboot-workflow --type='merge' -p '{\"spec\":{\"disabled\":false}}'"
+	echo -e "\tkubectl -n $NAMESPACE patch workflow ${VM2_NAME}-isoboot-workflow --type='merge' -p '{\"spec\":{\"disabled\":false}}'"
 
-	echo -e "\nTo attach to VM console (after workflow starts the VM):"
-	echo -e "\tvirsh console $VM1_NAME"
-	echo -e "\tvirsh console $VM2_NAME"
-	echo -e "\t# Note: $VM3_NAME uses isoboot which doesn't expose serial console"
-	echo -e "\t# Use VNC instead: virt-viewer $VM3_NAME or connect to VNC port"
-	echo -e "\t(Use Ctrl+] to disconnect from console)"
-
-	echo -e "\nAlternatively, use the script to enable and attach in one command:"
-	echo -e "\t$0 --enable-and-attach DOMAIN_NAME"
-	echo -e "\t# Note: For isoboot VMs, use VNC instead of console attach"
+	echo -e "\nTo connect to VMs (Use Ctrl+] to disconnect from console):"
+	echo -e "\tvirt-viewer $VM1_NAME or virsh console $VM1_NAME"
+	echo -e "\tvirt-viewer $VM2_NAME"
 }
 
 # Execute main function with all arguments
