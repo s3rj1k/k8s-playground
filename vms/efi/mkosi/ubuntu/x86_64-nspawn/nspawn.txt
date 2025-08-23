@@ -1,0 +1,20 @@
+docker pull kindest/node:v1.33.1@sha256:050072256b9a903bd914c0b2866828150cb229cea0efe5892e2b644d5dd3b34f
+
+docker create --name temp-kind-node kindest/node:v1.33.1@sha256:050072256b9a903bd914c0b2866828150cb229cea0efe5892e2b644d5dd3b34f
+mkdir -p /var/lib/machines/kind-node
+docker export temp-kind-node | tar -C /var/lib/machines/kind-node -xf -
+docker rm temp-kind-node
+
+systemd-nspawn --boot --directory=/var/lib/machines/kind-node --network-veth
+
+---
+
+importctl pull-tar -mN https://beta.release.flatcar-linux.net/amd64-usr/current/flatcar-container.tar.gz flatcar --verify=no
+
+# systemd-nspawn -M flatcar --network-veth
+# passwd
+
+systemd-nspawn -M flatcar --network-veth --boot
+
+machinectl start flatcar
+machinectl login flatcar

@@ -1,0 +1,186 @@
+#!/bin/bash
+
+set -x
+
+# `apt-mark showauto` - ref: https://github.com/systemd/mkosi/issues/3659
+# cp /var/lib/apt/extended_states $BUILDROOT/var/lib/apt/
+
+# Mask systemd services
+systemctl mask ModemManager.service
+systemctl mask NetworkManager.service
+systemctl mask auditd.service
+systemctl mask chronyd.service
+systemctl mask connman.service
+systemctl mask display-manager.service
+systemctl mask firewalld.service
+systemctl mask fstrim.service
+systemctl mask fstrim.timer
+systemctl mask lxd-installer.socket
+systemctl mask motd-news.service
+systemctl mask motd-news.timer
+systemctl mask plymouth-quit-wait.service
+systemctl mask plymouth-quit.service
+systemctl mask plymouth-read-write.service
+systemctl mask plymouth-start.service
+systemctl mask snapd.mounts-pre.target
+systemctl mask snapd.seeded.service
+systemctl mask syslog.service
+systemctl mask systemd-binfmt.service
+systemctl mask systemd-homed.service
+systemctl mask systemd-oomd.service
+systemctl mask systemd-userdbd.service
+systemctl mask systemd-userdbd.socket
+systemctl mask systemd-vconsole-setup.service
+systemctl mask ufw.service
+systemctl mask iscsid.service
+systemctl mask rpcbind.service
+systemctl mask rpc-statd-notify.service
+systemctl mask iscsid.socket
+systemctl mask rpcbind.socket
+systemctl mask systemd-sysext.socket
+systemctl mask nfs-client.target
+systemctl mask rpc_pipefs.target
+systemctl mask rpcbind.target
+systemctl mask swap.target
+
+# Enable systemd services
+systemctl enable kubelet.service
+systemctl enable systemd-networkd.service
+systemctl enable systemd-resolved.service
+systemctl enable containerd.service
+systemctl enable undo-mount-hacks.service
+
+# Disable swap
+sed -i 's/^\([^#].*[[:space:]]\+swap[[:space:]]\+.*\)$/#\1/' /etc/fstab
+
+# Cleanup directories
+cleanup_dirs=(
+	dev
+	proc
+	run
+	sys
+	tmp
+	var/cache/apt
+	var/cache/debconf
+	var/lib/apt/lists
+	var/log
+	var/tmp
+)
+for i in "${cleanup_dirs[@]}"; do
+	find /$i -mindepth 1 -depth -delete
+done
+
+# Cleanup files
+cleanup_files=(
+	etc/apt/sources.list.d/localdebs.list
+	etc/mailname
+	etc/ssh/ssh_host_*
+	var/lib/dbus/machine-id
+	var/log/alternatives.log
+	var/log/apt
+	var/log/bootstrap.log
+	var/log/dpkg.log
+	var/log/install_packages.list
+)
+for i in "${cleanup_files[@]}"; do
+	find /$i -depth -delete || :
+done
+
+# Empty out files
+empty_files=(
+	etc/hostname
+	etc/machine-id
+	var/lib/dpkg/available
+)
+for i in "${empty_files[@]}"; do
+	> /$i
+done
+
+# Remove documentation
+find /usr/share/doc -type f ! -name "copyright" -delete
+find /usr/share/doc-base -type f -delete
+find /usr/share/man -type f -delete
+find /usr/share/groff -type f -delete
+find /usr/share/info -type f -delete
+find /usr/share/lintian -type f -delete
+find /usr/share/linda -type f -delete
+
+# Remove locales except English
+find /usr/share/locale -type f -not -path "/usr/share/locale/en*" -delete
+
+# Clean up empty directories
+find /usr/share/doc -type d -empty -delete
+find /usr/share/doc-base -type d -empty -delete
+find /usr/share/man -type d -empty -delete
+find /usr/share/groff -type d -empty -delete
+find /usr/share/info -type d -empty -delete
+find /usr/share/lintian -type d -empty -delete
+find /usr/share/linda -type d -empty -delete
+find /usr/share/locale -type d -empty -delete
+
+# Hold Kubernetes packages
+apt-mark hold kubelet kubeadm
+
+# Save Kubelet version
+kubelet --version | awk '{print $2}' | tee /kubelet.version
+
+# Replace version template in kubeadm config
+if [ -f /etc/kubeadm/init.yaml ]; then
+	KUBE_VERSION=$(cat /kubelet.version)
+	sed -i "s|{{ version }}|$KUBE_VERSION|g" /etc/kubeadm/init.yaml
+fi
+
+# Download and install containerd (latest 2.1.x release)
+# KIND: https://github.com/kubernetes-sigs/kind/blob/main/images/base/Dockerfile
+CONTAINERD_VERSION=$(curl -s https://api.github.com/repos/containerd/containerd/releases | jq -r '.[] | select(.tag_name | startswith("v2.1.")) | .tag_name' | head -1)
+curl -L https://github.com/containerd/containerd/releases/download/${CONTAINERD_VERSION}/containerd-static-${CONTAINERD_VERSION#v}-linux-amd64.tar.gz | tar -xz -C /usr/local
+
+# Save containerd version
+echo ${CONTAINERD_VERSION#v} | tee /containerd.version
+
+# Download and install runc (latest release)
+RUNC_VERSION=$(curl -s https://api.github.com/repos/opencontainers/runc/releases/latest | jq -r '.tag_name')
+curl -L "https://github.com/opencontainers/runc/releases/download/${RUNC_VERSION}/runc.amd64" -o /usr/local/sbin/runc
+chmod +x /usr/local/sbin/runc
+
+# Save runc version
+echo ${RUNC_VERSION#v} | tee /runc.version
+
+# Download and install crictl (latest release)
+CRICTL_VERSION=$(curl -s https://api.github.com/repos/kubernetes-sigs/cri-tools/releases/latest | jq -r '.tag_name')
+curl -L "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin
+
+# Save crictl version
+echo ${CRICTL_VERSION#v} | tee /crictl.version
+
+# Download and install CNI plugins (latest release)
+CNI_PLUGINS_VERSION=$(curl -s https://api.github.com/repos/containernetworking/plugins/releases/latest | jq -r '.tag_name')
+mkdir -p /opt/cni/bin
+curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz" | tar -xz -C /opt/cni/bin
+
+# Save CNI plugins version
+echo ${CNI_PLUGINS_VERSION#v} | tee /cni-plugins.version
+
+# Download and install containerd-fuse-overlayfs (latest v2.1.x release)
+CONTAINERD_FUSE_OVERLAYFS_VERSION=$(curl -s https://api.github.com/repos/containerd/fuse-overlayfs-snapshotter/releases | jq -r '.[] | select(.tag_name | startswith("v2.1.")) | .tag_name' | head -1)
+curl -L "https://github.com/containerd/fuse-overlayfs-snapshotter/releases/download/${CONTAINERD_FUSE_OVERLAYFS_VERSION}/containerd-fuse-overlayfs-${CONTAINERD_FUSE_OVERLAYFS_VERSION#v}-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin
+
+# Save containerd-fuse-overlayfs version
+echo ${CONTAINERD_FUSE_OVERLAYFS_VERSION#v} | tee /containerd-fuse-overlayfs.version
+
+# Create containerd CRI base spec (needed for kind compatibility)
+mkdir -p /etc/containerd
+/usr/local/bin/ctr oci spec | jq 'del(.process.rlimits)' > /etc/containerd/cri-base.json
+
+# Ensure kubernetes manifests directory exists
+mkdir -p /etc/kubernetes/manifests
+
+# Prepare locale
+locale-gen
+
+# Configure journald
+echo "ReadKMsg=no" >> /etc/systemd/journald.conf
+
+# Clean apt cache
+rm -vrf /var/lib/apt/lists /var/cache/apt
+apt clean

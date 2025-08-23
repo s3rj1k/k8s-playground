@@ -1,0 +1,30 @@
+#!/bin/bash
+
+set -x
+
+# Get Kubelet version out from built image
+cp -av "$BUILDROOT/kubelet.version" "$OUTPUTDIR/"
+
+# Get containerd version out from built image
+cp -av "$BUILDROOT/containerd.version" "$OUTPUTDIR/"
+
+# Get runc version out from built image
+cp -av "$BUILDROOT/runc.version" "$OUTPUTDIR/"
+
+# Get crictl version out from built image
+cp -av "$BUILDROOT/crictl.version" "$OUTPUTDIR/"
+
+# Get CNI plugins version out from built image
+cp -av "$BUILDROOT/cni-plugins.version" "$OUTPUTDIR/"
+
+# Get containerd-fuse-overlayfs version out from built image
+cp -av "$BUILDROOT/containerd-fuse-overlayfs.version" "$OUTPUTDIR/"
+
+# Generate containerd CRI base configuration
+ctr oci spec \
+    | jq '.hooks.createContainer[.hooks.createContainer| length] |= . + {"path": "/usr/local/bin/mount-product-files.sh"}' \
+    | jq 'del(.process.rlimits)' \
+    > "$BUILDROOT/etc/containerd/cri-base.json"
+
+# Set root password
+echo 'root:root' | chroot "$BUILDROOT" chpasswd
