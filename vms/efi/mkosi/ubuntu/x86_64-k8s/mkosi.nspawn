@@ -1,8 +1,0 @@
-[Exec]
-PrivateUsers=true
-NotifyReady=true
-ResolvConf=bind-stub
-
-[Network]
-Private=yes
-VirtualEthernet=yes

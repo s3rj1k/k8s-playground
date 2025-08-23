@@ -30,14 +30,6 @@
 
     mkosi --force --format=oci build
 
-*Build nspawn directory image:*
-
-    mkosi --format=directory build
-
-*Run nspawn directory image:*
-
-    systemd-nspawn --boot --directory=image.vm [--network-macvlan=eth0 | --network-veth]
-
 *Run RAW image using qemu:*
 
     mkosi qemu
