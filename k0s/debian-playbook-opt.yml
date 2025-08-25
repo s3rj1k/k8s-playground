@@ -750,6 +750,9 @@
           args:
             executable: /bin/bash
           register: cilium_install_result
+          until: cilium_install_result.rc == 0
+          retries: 40
+          delay: 30
 
         - name: Configure Cilium for running without kube-proxy
           shell: |
