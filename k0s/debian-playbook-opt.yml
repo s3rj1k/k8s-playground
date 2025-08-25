@@ -743,17 +743,6 @@
 
     - name: Install and configure Cilium CNI
       block:
-        - name: Wait for k0s cluster to be ready
-          shell: |
-            export KUBECONFIG=/var/lib/k0s/pki/admin.conf
-            k0s kubectl wait --for=condition=Ready nodes --all --timeout=300s
-          args:
-            executable: /bin/bash
-          register: cluster_ready
-          until: cluster_ready.rc == 0
-          retries: 10
-          delay: 30
-
         - name: Install Cilium CNI with L2 announcements
           shell: |
             export KUBECONFIG=/var/lib/k0s/pki/admin.conf
@@ -778,6 +767,17 @@
             executable: /bin/bash
           register: cilium_status_result
           until: cilium_status_result.rc == 0
+          retries: 10
+          delay: 30
+
+        - name: Wait for k0s cluster to be ready
+          shell: |
+            export KUBECONFIG=/var/lib/k0s/pki/admin.conf
+            k0s kubectl wait --for=condition=Ready nodes --all --timeout=300s
+          args:
+            executable: /bin/bash
+          register: cluster_ready
+          until: cluster_ready.rc == 0
           retries: 10
           delay: 30
       when: WORKER_DATA is not defined or WORKER_DATA | trim | length == 0
