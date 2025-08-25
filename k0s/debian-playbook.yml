@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # DEBUG: ansible-pull -U https://github.com/s3rj1k/playground.git k0s/debian-playbook.yml
-#        ansible-pull -U https://github.com/s3rj1k/playground.git -e "ENABLE_KONNECTIVITY=true" k0s/debian-playbook.yml
+#        ansible-pull -U https://github.com/s3rj1k/playground.git -e "ENABLE_DYNAMIC_CONFIG=true" k0s/debian-playbook.yml
 
 ---
 - name: Kubernetes (k0s) on Debian/Ubuntu AMD64
@@ -13,8 +13,8 @@
   ignore_errors: false
   vars:
     K0S_MAJOR_MINOR_VERSION: "1.33"
-    ENABLE_KONNECTIVITY: false
     ENABLE_DYNAMIC_CONFIG: false
+    K0S_EXTRA_FLAGS: "--disable-components=konnectivity-server"
     INSTALL_ZOT: false
     LB_IP_RANGE_START: ""
     LB_IP_RANGE_STOP: ""
@@ -245,7 +245,7 @@
             url: "https://github.com/kubernetes-sigs/cluster-api/releases/download/{{ version }}/clusterctl-linux-amd64"
             dest: /usr/local/bin/clusterctl
             mode: "0755"
-          when: version | trim | length > 0
+          when: version is defined
       when: WORKER_DATA is not defined or WORKER_DATA | trim | length == 0
 
     - name: Configure and generate locale
@@ -464,28 +464,25 @@
 
     - name: Install k0s
       block:
-        - name: Get all k0s releases
-          uri:
-            url: "https://api.github.com/repos/k0sproject/k0s/releases"
-            return_content: yes
-          register: k0s_releases_info
+        - name: Get latest k0s {{ K0S_MAJOR_MINOR_VERSION }} version
+          shell: |
+            curl -s "https://api.github.com/repos/k0sproject/k0s/releases" | \
+            jq -r '.[] | select(.tag_name | test("^v{{ K0S_MAJOR_MINOR_VERSION | regex_escape }}\\.[0-9]+\\+k0s\\.[0-9]+$")) | .tag_name' | \
+            head -1
+          register: k0s_version_result
+          changed_when: false
 
-        - name: Find latest patch version for k0s {{ K0S_MAJOR_MINOR_VERSION }}
+        - name: Set k0s version
           set_fact:
-            k0s_version: "{{ item.tag_name }}"
-          when:
-            - k0s_releases_info is defined
-            - k0s_releases_info.status == 200
-            - k0s_version is not defined
-            - item.tag_name | regex_search('^v' + K0S_MAJOR_MINOR_VERSION | regex_escape() + '\\.\\d+\\+k0s\\.\\d+$')
-          loop: "{{ k0s_releases_info.json }}"
+            k0s_version: "{{ k0s_version_result.stdout }}"
+          when: k0s_version_result.stdout | length > 0
 
         - name: Download k0s binary ({{ k0s_version | default('version not found') }})
           get_url:
             url: "https://github.com/k0sproject/k0s/releases/download/{{ k0s_version }}/k0s-{{ k0s_version }}-amd64"
             dest: /usr/local/bin/k0s
             mode: "0755"
-          when: k0s_version is defined and k0s_version | trim | length > 0
+          when: k0s_version is defined
 
         - name: Create k0s configuration script
           copy:
@@ -638,17 +635,11 @@
                 DYNAMIC_CONFIG_FLAG="--enable-dynamic-config"
               fi
 
-              DISABLED_COMPONENTS=""
-              if [ "${ENABLE_KONNECTIVITY:-false}" = "false" ] || [ -z "${ENABLE_KONNECTIVITY}" ]; then
-                DISABLED_COMPONENTS="--disable-components konnectivity-server"
-              fi
-
-              k0s install controller -c /root/k0s.yaml $DYNAMIC_CONFIG_FLAG $DISABLED_COMPONENTS --enable-worker --no-taints --kubelet-root-dir=/var/lib/kubelet --verbose
+              k0s install controller -c /root/k0s.yaml $DYNAMIC_CONFIG_FLAG {{ K0S_EXTRA_FLAGS }} --enable-worker --no-taints --kubelet-root-dir=/var/lib/kubelet --verbose
             fi
           args:
             executable: /bin/bash
           environment:
-            ENABLE_KONNECTIVITY: "{{ ENABLE_KONNECTIVITY | default(false) | string | lower }}"
             ENABLE_DYNAMIC_CONFIG: "{{ ENABLE_DYNAMIC_CONFIG | default(false) | string | lower }}"
           when: WORKER_DATA is not defined or WORKER_DATA | trim | length == 0
 
@@ -783,7 +774,7 @@
             mode: "0755"
             owner: root
             group: root
-          when: zot_version | trim | length > 0
+          when: zot_version is defined
 
         - name: Create Zot configuration directory
           file:
