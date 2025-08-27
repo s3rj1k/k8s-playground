@@ -60,9 +60,9 @@ set_config()
 	NAMESPACE="tinkerbell"
 
 	# HookOS Configuration
-	HOOKOS_DOWNLOAD_URL="${HOOKOS_DOWNLOAD_URL:-https://github.com/tinkerbell/hook/releases/download/v0.11.1}"
+	HOOKOS_DOWNLOAD_URL="${HOOKOS_DOWNLOAD_URL:-https://github.com/tinkerbell/hook/releases/download/latest}"
 	# See: https://github.com/tinkerbell/tinkerbell/issues/300
-	HOOKOS_ISO_URL="${HOOKOS_DOWNLOAD_URL}/hook-latest-lts-x86_64-efi-initrd.iso"
+	HOOKOS_ISO_URL="${HOOKOS_DOWNLOAD_URL}/hook-x86_64-efi-initrd.iso"
 
 	# Template names
 	TEMPLATE_NAME="ubuntu-nokexec"
