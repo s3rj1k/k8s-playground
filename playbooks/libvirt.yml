@@ -1,7 +1,7 @@
 # Copyright 2025 s3rj1k
 # SPDX-License-Identifier: MIT
 
-# DEBUG: ansible-pull -U https://github.com/s3rj1k/playground.git tinkerbell/playbook.yml
+# DEBUG: ansible-pull -U https://github.com/s3rj1k/playground.git playbooks/libvirt.yml
 
 ---
 - name: Libvirt with Redfish and Kind on AMD64
@@ -497,13 +497,12 @@
             path: /etc/ssh/sshd_config
             regexp: "^#?PermitRootLogin"
             line: "PermitRootLogin prohibit-password"
-          notify: Restart sshd
 
         - name: Remove cloud-init SSH configuration
           file:
             path: /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
             state: absent
-          notify: Restart sshd
+      notify: Restart sshd
 
     - name: Configure kernel modules
       block:
@@ -609,7 +608,6 @@
               # https://github.com/stefanberger/swtpm/issues/572#issuecomment-1642014467
               swtpm_user="swtpm"
               swtpm_group="swtpm"
-          notify: Restart libvirtd
           when: ansible_distribution == "Ubuntu"
 
         - name: Configure libvirt QEMU
@@ -620,8 +618,8 @@
               user = "root"
               group = "root"
               dynamic_ownership = 0
-          notify: Restart libvirtd
           when: ansible_distribution == "Debian"
+      notify: Restart libvirtd
 
     - name: Install and configure Sushy Tools Redfish Emulator
       block:
@@ -729,7 +727,6 @@
               }
               SUSHY_EMULATOR_VMEDIA_VERIFY_SSL = False
             mode: "0644"
-          notify: Restart sushy-emulator
 
         - name: Create Sushy Tools startup script
           copy:

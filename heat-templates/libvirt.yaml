@@ -1,0 +1,373 @@
+# Copyright 2025 s3rj1k
+# SPDX-License-Identifier: MIT
+
+heat_template_version: 2021-04-16
+
+description: Template for VM with Libvirt
+
+parameters:
+  prefix:
+    type: string
+    description: "Resource name prefix"
+    default: s3rj1k
+    label: "Resource name prefix"
+    constraints:
+      - length:
+          min: 1
+          max: 32
+        description: "Resource name prefix must be between 1 and 32 characters"
+      - allowed_pattern: "^[a-zA-Z0-9-_]+$"
+        description: "Resource name prefix can only contain letters, numbers, underscore and hyphen"
+
+  registry_mirror:
+    type: string
+    description: "Image registry mirror URL"
+    label: "Image Registry Mirror"
+
+  image_id:
+    type: string
+    description: "Image to use for the instances."
+    default: ubuntu-24.04-minimal-cloudimg-amd64
+    label: "Server Image"
+    constraints:
+      - allowed_values:
+          - ubuntu-24.04-minimal-cloudimg-amd64
+          - debian-13-generic-amd64
+        description: "Must be a known Image ID"
+
+  ssh_pub_key:
+    type: string
+    description: "SSH public key for instance access"
+    default: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKLrIiGjB4nPsyKzgzY21asVi/HKlveRnNY77vOhRhOA"
+    label: "SSH Public Key"
+    constraints:
+      - length:
+          min: 1
+
+  external_network:
+    type: string
+    description: "External network for router gateway"
+    default: "public"
+    label: "External Network"
+
+  network_cidr:
+    type: string
+    description: "CIDR for the network"
+    default: "10.42.71.0/24"
+    label: "Network CIDR"
+
+  allocation_pool_start:
+    type: string
+    description: "Start of IP allocation pool"
+    default: "10.42.71.10"
+    label: "Allocation Pool Start"
+
+  allocation_pool_stop:
+    type: string
+    description: "End of IP allocation pool"
+    default: "10.42.71.250"
+    label: "Allocation Pool Stop"
+
+  vm_ip_1:
+    type: string
+    description: "First IP address for VM"
+    default: "10.42.71.101"
+    label: "VM IP 1"
+
+  vm_ip_2:
+    type: string
+    description: "Second IP address for VM"
+    default: "10.42.71.102"
+    label: "VM IP 2"
+
+  vm_ip_3:
+    type: string
+    description: "Third IP address for VM"
+    default: "10.42.71.103"
+    label: "VM IP 3"
+
+  availability_zone:
+    type: string
+    description: "Availability zone for instances"
+    default: "nova"
+    label: "Availability Zone"
+
+  flavor:
+    type: string
+    description: "Instance flavor"
+    default: "re.jenkins.master.xlarge"
+    label: "Instance Flavor"
+
+  volume_size:
+    type: number
+    description: "Size of root volume in GB"
+    default: 200
+    label: "Volume Size"
+
+resources:
+  ssh_authorized_keys:
+    type: "OS::Heat::Value"
+    properties:
+      value:
+        - { get_param: ssh_pub_key }
+
+  network:
+    type: "OS::Neutron::Net"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-network
+          params:
+            $prefix:
+              get_param: prefix
+      port_security_enabled: false
+      admin_state_up: true
+      availability_zone_hints:
+        - get_param: availability_zone
+
+  subnet:
+    type: "OS::Neutron::Subnet"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-subnet
+          params:
+            $prefix:
+              get_param: prefix
+      network_id:
+        get_resource: network
+      cidr:
+        get_param: network_cidr
+      ip_version: 4
+      enable_dhcp: true
+      allocation_pools:
+        - start:
+            get_param: allocation_pool_start
+          end:
+            get_param: allocation_pool_stop
+
+  router:
+    type: "OS::Neutron::Router"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-router
+          params:
+            $prefix:
+              get_param: prefix
+      admin_state_up: true
+      external_gateway_info:
+        network:
+          get_param: external_network
+
+  router_interface:
+    type: "OS::Neutron::RouterInterface"
+    properties:
+      router_id:
+        get_resource: router
+      subnet_id:
+        get_resource: subnet
+
+  port_vm_1:
+    type: "OS::Neutron::Port"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-port-vm-1
+          params:
+            $prefix:
+              get_param: prefix
+      network:
+        get_resource: network
+      admin_state_up: true
+      port_security_enabled: false
+      fixed_ips:
+        - subnet:
+            get_resource: subnet
+          ip_address:
+            get_param: vm_ip_1
+
+  port_vm_2:
+    type: "OS::Neutron::Port"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-port-vm-2
+          params:
+            $prefix:
+              get_param: prefix
+      network:
+        get_resource: network
+      admin_state_up: true
+      port_security_enabled: false
+      fixed_ips:
+        - subnet:
+            get_resource: subnet
+          ip_address:
+            get_param: vm_ip_2
+
+  port_vm_3:
+    type: "OS::Neutron::Port"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-port-vm-3
+          params:
+            $prefix:
+              get_param: prefix
+      network:
+        get_resource: network
+      admin_state_up: true
+      port_security_enabled: false
+      fixed_ips:
+        - subnet:
+            get_resource: subnet
+          ip_address:
+            get_param: vm_ip_3
+
+  floating_ip_vm_1:
+    type: "OS::Neutron::FloatingIP"
+    properties:
+      floating_network:
+        get_param: external_network
+      port_id:
+        get_resource: port_vm_1
+
+  floating_ip_vm_2:
+    type: "OS::Neutron::FloatingIP"
+    properties:
+      floating_network:
+        get_param: external_network
+      port_id:
+        get_resource: port_vm_2
+
+  floating_ip_vm_3:
+    type: "OS::Neutron::FloatingIP"
+    properties:
+      floating_network:
+        get_param: external_network
+      port_id:
+        get_resource: port_vm_3
+
+  vm_wait_handle:
+    type: "OS::Heat::WaitConditionHandle"
+
+  vm_wait_condition:
+    type: "OS::Heat::WaitCondition"
+    properties:
+      handle:
+        get_resource: vm_wait_handle
+      timeout: 1800
+
+  vm_user_data:
+    type: "OS::Heat::Value"
+    properties:
+      value:
+        str_replace:
+          template: |
+            #cloud-config
+
+            # https://cloudinit.readthedocs.io/en/24.1/reference/examples.html
+            # Logs are in:
+            #  - /var/log/cloud-init.log
+            #  - /var/log/cloud-init-output.log
+
+            users:
+              - name: root
+                shell: /bin/bash
+                lock_passwd: false
+                plain_text_passwd: root
+                ssh_authorized_keys: %ssh_keys%
+
+            # https://cloudinit.readthedocs.io/en/latest/reference/modules.html#ansible
+
+            runcmd:
+              - |
+                apt-get update && apt-get install -y ansible git || true
+
+                ansible-pull -U "https://github.com/s3rj1k/playground.git" \
+                  playbooks/libvirt.yml \
+                  -v \
+                  -e "registry_mirror='%registry_mirror%'"
+                ANSIBLE_RESULT=$?
+
+                if [ $ANSIBLE_RESULT -eq 0 ]; then
+                  %wc_notify% --data-binary "{\"status\": \"SUCCESS\", \"data\": \"Ansible playbook execution completed\"}"
+                else
+                  %wc_notify% --data-binary "{\"status\": \"FAILURE\", \"reason\": \"Ansible playbook execution failed\"}"
+                  exit 1
+                fi
+          params:
+            "%ssh_keys%":
+              get_attr:
+                - ssh_authorized_keys
+                - value
+            "%registry_mirror%":
+              get_param: registry_mirror
+            "%wc_notify%":
+              get_attr:
+                - vm_wait_handle
+                - curl_cli
+
+  vm:
+    type: "OS::Nova::Server"
+    properties:
+      name:
+        str_replace:
+          template: "%prefix%-vm"
+          params:
+            "%prefix%":
+              get_param: prefix
+      availability_zone:
+        get_param: availability_zone
+      flavor:
+        get_param: flavor
+      config_drive: true
+      block_device_mapping_v2:
+        - image_id:
+            get_param: image_id
+          delete_on_termination: true
+          boot_index: 0
+          volume_size:
+            get_param: volume_size
+      networks:
+        - port:
+            get_resource: port_vm_1
+        - port:
+            get_resource: port_vm_2
+        - port:
+            get_resource: port_vm_3
+      user_data_format: RAW
+      user_data:
+        get_attr:
+          - vm_user_data
+          - value
+
+outputs:
+  vm_floating_ip_1:
+    description: First floating IP address for VM
+    value:
+      get_attr:
+        - floating_ip_vm_1
+        - floating_ip_address
+
+  vm_floating_ip_2:
+    description: Second floating IP address for VM
+    value:
+      get_attr:
+        - floating_ip_vm_2
+        - floating_ip_address
+
+  vm_floating_ip_3:
+    description: Third floating IP address for VM
+    value:
+      get_attr:
+        - floating_ip_vm_3
+        - floating_ip_address
+
+  vm_user_data:
+    description: Rendered VM user-data
+    value:
+      get_attr:
+        - vm_user_data
+        - value

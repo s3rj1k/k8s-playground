@@ -3,12 +3,13 @@
 
 heat_template_version: 2021-04-16
 
-description: Template for 2 node K8s Cluster
+description: Template for 2 node K0s Cluster
 
 parameters:
   prefix:
     type: string
     description: "Resource name prefix"
+    default: s3rj1k
     label: "Resource name prefix"
     constraints:
       - length:
@@ -31,11 +32,13 @@ parameters:
     constraints:
       - allowed_values:
           - ubuntu-24.04-minimal-cloudimg-amd64
+          - debian-13-generic-amd64
         description: "Must be a known Image ID"
 
   ssh_pub_key:
     type: string
     description: "SSH public key for instance access"
+    default: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKLrIiGjB4nPsyKzgzY21asVi/HKlveRnNY77vOhRhOA"
     label: "SSH Public Key"
     constraints:
       - length:
@@ -86,31 +89,36 @@ parameters:
   controller_flavor:
     type: string
     description: "Flavor for controller instance"
+    default: "system.golden.kubernetes.control"
     label: "Controller Instance Flavor"
 
   worker_flavor:
     type: string
     description: "Flavor for worker instances"
+    default: "a1.large"
     label: "Worker Instance Flavor"
 
   controller_volume_size:
     type: number
     description: "Size of root volume for controller node in GB"
+    default: 100
     label: "Controller Volume Size"
 
   worker_volume_size:
     type: number
     description: "Size of root volume for worker nodes in GB"
+    default: 80
     label: "Worker Volume Size"
 
   ansible_playbook:
     type: string
     description: "Ansible playbook to use"
-    default: "k8s/debian-playbook.yml"
+    default: "playbooks/k0s-deb.yml"
     label: "Ansible playbook"
     constraints:
       - allowed_values:
-          - k8s/debian-playbook.yml
+          - playbooks/k0s-deb.yml
+          - playbooks/k0s-deb-opt.yml
         description: "Must be a known Ansible playbook"
 
 resources:
@@ -119,7 +127,7 @@ resources:
     properties:
       name:
         str_replace:
-          template: $prefix-k8s-network
+          template: $prefix-k0s-network
           params:
             $prefix:
               get_param: prefix
@@ -133,7 +141,7 @@ resources:
     properties:
       name:
         str_replace:
-          template: $prefix-k8s-subnet
+          template: $prefix-k0s-subnet
           params:
             $prefix:
               get_param: prefix
@@ -154,7 +162,7 @@ resources:
     properties:
       name:
         str_replace:
-          template: $prefix-k8s-router
+          template: $prefix-k0s-router
           params:
             $prefix:
               get_param: prefix
@@ -176,7 +184,7 @@ resources:
     properties:
       name:
         str_replace:
-          template: $prefix-k8s-port-controller
+          template: $prefix-k0s-port-controller
           params:
             $prefix:
               get_param: prefix
@@ -195,7 +203,7 @@ resources:
     properties:
       name:
         str_replace:
-          template: $prefix-k8s-port-worker-node-1
+          template: $prefix-k0s-port-worker-node-1
           params:
             $prefix:
               get_param: prefix
@@ -233,7 +241,7 @@ resources:
     properties:
       handle:
         get_resource: controller_wait_handle
-      timeout: 1800
+      timeout: 3600
 
   worker_node_1_wait_handle:
     type: "OS::Heat::WaitConditionHandle"
@@ -243,7 +251,7 @@ resources:
     properties:
       handle:
         get_resource: worker_node_1_wait_handle
-      timeout: 1800
+      timeout: 3600
 
   controller_user_data:
     type: "OS::Heat::Value"
@@ -272,15 +280,18 @@ resources:
                 ansible-pull -U "https://github.com/s3rj1k/playground.git" \
                   %ansible_playbook% \
                   -vvvv \
-                  -e "REGISTRY_MIRROR='%registry_mirror%' \
-                      LB_IP_RANGE_START='%lb_ip_range_start%' \
-                      LB_IP_RANGE_STOP='%lb_ip_range_stop%'"
+                  -e REGISTRY_MIRROR='%registry_mirror%' \
+                  -e LB_IP_RANGE_START='%lb_ip_range_start%' \
+                  -e LB_IP_RANGE_STOP='%lb_ip_range_stop%'
                 ANSIBLE_RESULT=$?
 
-                apt-get remove -y --autoremove --purge ansible || true
-
                 if [ $ANSIBLE_RESULT -eq 0 ]; then
-                  WORKER_DATA=$(kubeadm token create --print-join-command)
+                  until k0s status 2>/dev/null; do
+                    echo "Waiting for k0s to be ready..."
+                    sleep 10
+                  done
+
+                  WORKER_DATA=$(k0s token create --role=worker)
                   %wc_notify% --data-binary "{\"status\": \"SUCCESS\", \"data\": \"$WORKER_DATA\"}"
                 else
                   %wc_notify% --data-binary "{\"status\": \"FAILURE\", \"reason\": \"Ansible playbook execution failed\"}"
@@ -341,8 +352,6 @@ resources:
                       WORKER_DATA='${WORKER_DATA}'"
                 ANSIBLE_RESULT=$?
 
-                apt-get remove -y --autoremove --purge ansible || true
-
                 if [ $ANSIBLE_RESULT -eq 0 ]; then
                   %wc_notify% --data-binary '{"status": "SUCCESS", "data": "Worker node #1 setup complete"}'
                 else
@@ -370,7 +379,7 @@ resources:
     properties:
       name:
         str_replace:
-          template: "%prefix%-k8s-controller"
+          template: "%prefix%-k0s-controller"
           params:
             "%prefix%":
               get_param: prefix
@@ -401,7 +410,7 @@ resources:
     properties:
       name:
         str_replace:
-          template: "%prefix%-k8s-worker-node-1"
+          template: "%prefix%-k0s-worker-node-1"
           params:
             "%prefix%":
               get_param: prefix

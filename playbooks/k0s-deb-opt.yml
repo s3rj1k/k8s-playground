@@ -1,8 +1,8 @@
 # Copyright 2025 s3rj1k
 # SPDX-License-Identifier: MIT
 
-# DEBUG: ansible-pull -U https://github.com/s3rj1k/playground.git k0s/debian-playbook-opt.yml
-#        ansible-pull -U https://github.com/s3rj1k/playground.git -e "ENABLE_DYNAMIC_CONFIG=true" k0s/debian-playbook-opt.yml
+# DEBUG: ansible-pull -U https://github.com/s3rj1k/playground.git playbooks/k0s-deb-opt.yml
+#        ansible-pull -U https://github.com/s3rj1k/playground.git -e "ENABLE_DYNAMIC_CONFIG=true" playbooks/k0s-deb-opt.yml
 
 ---
 - name: Kubernetes (k0s) on Debian/Ubuntu AMD64
@@ -68,7 +68,7 @@
             snap list | awk '/^core/ {print $1}' | xargs -r snap remove --purge
             snap list | awk '/^snapd/ {print $1}' | xargs -r snap remove --purge
             snap list | awk '!/^Name/ {print $1}' | xargs -r snap remove --purge
-          ignore_errors: yes
+          ignore_errors: true
           when: ansible_distribution == "Ubuntu"
 
         - name: Remove system packages
@@ -116,7 +116,7 @@
             remove: yes
           loop:
             - lxd
-          ignore_errors: yes
+          ignore_errors: true
 
         - name: Remove groups
           group:
@@ -124,7 +124,7 @@
             state: absent
           loop:
             - lxd
-          ignore_errors: yes
+          ignore_errors: true
 
     - name: Update and upgrade system packages
       apt:

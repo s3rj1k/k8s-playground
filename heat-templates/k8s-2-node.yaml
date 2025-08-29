@@ -1,0 +1,465 @@
+# Copyright 2025 s3rj1k
+# SPDX-License-Identifier: MIT
+
+heat_template_version: 2021-04-16
+
+description: Template for 2 node K8s Cluster
+
+parameters:
+  prefix:
+    type: string
+    description: "Resource name prefix"
+    default: s3rj1k
+    label: "Resource name prefix"
+    constraints:
+      - length:
+          min: 1
+          max: 32
+        description: "Resource name prefix must be between 1 and 32 characters"
+      - allowed_pattern: "^[a-zA-Z0-9-_]+$"
+        description: "Resource name prefix can only contain letters, numbers, underscore and hyphen"
+
+  registry_mirror:
+    type: string
+    description: "Image registry mirror URL"
+    label: "Image Registry Mirror"
+
+  image_id:
+    type: string
+    description: "Image to use for the instances."
+    default: ubuntu-24.04-minimal-cloudimg-amd64
+    label: "Server Image"
+    constraints:
+      - allowed_values:
+          - ubuntu-24.04-minimal-cloudimg-amd64
+        description: "Must be a known Image ID"
+
+  ssh_pub_key:
+    type: string
+    description: "SSH public key for instance access"
+    default: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKLrIiGjB4nPsyKzgzY21asVi/HKlveRnNY77vOhRhOA"
+    label: "SSH Public Key"
+    constraints:
+      - length:
+          min: 1
+
+  external_network:
+    type: string
+    description: "External network for router gateway"
+    default: "public"
+    label: "External Network"
+
+  network_cidr:
+    type: string
+    description: "CIDR for the network"
+    default: "10.42.71.0/24"
+    label: "Network CIDR"
+
+  allocation_pool_start:
+    type: string
+    description: "Start of IP allocation pool"
+    default: "10.42.71.10"
+    label: "Allocation Pool Start"
+
+  allocation_pool_stop:
+    type: string
+    description: "End of IP allocation pool"
+    default: "10.42.71.250"
+    label: "Allocation Pool Stop"
+
+  controller_ip:
+    type: string
+    description: "IP address for controller node"
+    default: "10.42.71.101"
+    label: "Controller IP"
+
+  worker_node_1_ip:
+    type: string
+    description: "IP address for first worker node"
+    default: "10.42.71.102"
+    label: "Worker Node 1 IP"
+
+  availability_zone:
+    type: string
+    description: "Availability zone for instances"
+    default: "nova"
+    label: "Availability Zone"
+
+  controller_flavor:
+    type: string
+    description: "Flavor for controller instance"
+    default: "system.golden.kubernetes.control"
+    label: "Controller Instance Flavor"
+
+  worker_flavor:
+    type: string
+    description: "Flavor for worker instances"
+    default: "a1.large"
+    label: "Worker Instance Flavor"
+
+  controller_volume_size:
+    type: number
+    description: "Size of root volume for controller node in GB"
+    default: 100
+    label: "Controller Volume Size"
+
+  worker_volume_size:
+    type: number
+    description: "Size of root volume for worker nodes in GB"
+    default: 80
+    label: "Worker Volume Size"
+
+  ansible_playbook:
+    type: string
+    description: "Ansible playbook to use"
+    default: "playbooks/k8s-deb.yml"
+    label: "Ansible playbook"
+    constraints:
+      - allowed_values:
+          - playbooks/k8s-deb.yml
+        description: "Must be a known Ansible playbook"
+
+resources:
+  network:
+    type: "OS::Neutron::Net"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-k8s-network
+          params:
+            $prefix:
+              get_param: prefix
+      port_security_enabled: false
+      admin_state_up: true
+      availability_zone_hints:
+        - get_param: availability_zone
+
+  subnet:
+    type: "OS::Neutron::Subnet"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-k8s-subnet
+          params:
+            $prefix:
+              get_param: prefix
+      network_id:
+        get_resource: network
+      cidr:
+        get_param: network_cidr
+      ip_version: 4
+      enable_dhcp: true
+      allocation_pools:
+        - start:
+            get_param: allocation_pool_start
+          end:
+            get_param: allocation_pool_stop
+
+  router:
+    type: "OS::Neutron::Router"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-k8s-router
+          params:
+            $prefix:
+              get_param: prefix
+      admin_state_up: true
+      external_gateway_info:
+        network:
+          get_param: external_network
+
+  router_interface:
+    type: "OS::Neutron::RouterInterface"
+    properties:
+      router_id:
+        get_resource: router
+      subnet_id:
+        get_resource: subnet
+
+  port_controller:
+    type: "OS::Neutron::Port"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-k8s-port-controller
+          params:
+            $prefix:
+              get_param: prefix
+      network:
+        get_resource: network
+      admin_state_up: true
+      port_security_enabled: false
+      fixed_ips:
+        - subnet:
+            get_resource: subnet
+          ip_address:
+            get_param: controller_ip
+
+  port_worker_node_1:
+    type: "OS::Neutron::Port"
+    properties:
+      name:
+        str_replace:
+          template: $prefix-k8s-port-worker-node-1
+          params:
+            $prefix:
+              get_param: prefix
+      network:
+        get_resource: network
+      admin_state_up: true
+      port_security_enabled: false
+      fixed_ips:
+        - subnet:
+            get_resource: subnet
+          ip_address:
+            get_param: worker_node_1_ip
+
+  floating_ip_controller:
+    type: "OS::Neutron::FloatingIP"
+    properties:
+      floating_network:
+        get_param: external_network
+      port_id:
+        get_resource: port_controller
+
+  floating_ip_worker_node_1:
+    type: "OS::Neutron::FloatingIP"
+    properties:
+      floating_network:
+        get_param: external_network
+      port_id:
+        get_resource: port_worker_node_1
+
+  controller_wait_handle:
+    type: "OS::Heat::WaitConditionHandle"
+
+  controller_wait_condition:
+    type: "OS::Heat::WaitCondition"
+    properties:
+      handle:
+        get_resource: controller_wait_handle
+      timeout: 3600
+
+  worker_node_1_wait_handle:
+    type: "OS::Heat::WaitConditionHandle"
+
+  worker_node_1_wait_condition:
+    type: "OS::Heat::WaitCondition"
+    properties:
+      handle:
+        get_resource: worker_node_1_wait_handle
+      timeout: 3600
+
+  controller_user_data:
+    type: "OS::Heat::Value"
+    properties:
+      value:
+        str_replace:
+          template: |
+            #cloud-config
+
+            # https://cloudinit.readthedocs.io/en/24.1/reference/examples.html
+            # Logs are in:
+            #  - /var/log/cloud-init.log
+            #  - /var/log/cloud-init-output.log
+
+            users:
+              - name: root
+                shell: /bin/bash
+                lock_passwd: false
+                plain_text_passwd: root
+                ssh_authorized_keys: %ssh_keys%
+
+            runcmd:
+              - |
+                apt-get update && apt-get install -y ansible git || true
+
+                ansible-pull -U "https://github.com/s3rj1k/playground.git" \
+                  %ansible_playbook% \
+                  -vvvv \
+                  -e "REGISTRY_MIRROR='%registry_mirror%' \
+                      LB_IP_RANGE_START='%lb_ip_range_start%' \
+                      LB_IP_RANGE_STOP='%lb_ip_range_stop%'"
+                ANSIBLE_RESULT=$?
+
+                if [ $ANSIBLE_RESULT -eq 0 ]; then
+                  WORKER_DATA=$(kubeadm token create --print-join-command)
+                  %wc_notify% --data-binary "{\"status\": \"SUCCESS\", \"data\": \"$WORKER_DATA\"}"
+                else
+                  %wc_notify% --data-binary "{\"status\": \"FAILURE\", \"reason\": \"Ansible playbook execution failed\"}"
+                  exit 1
+                fi
+          params:
+            "%ssh_keys%":
+              get_param: ssh_pub_key
+            "%ansible_playbook%":
+              get_param: ansible_playbook
+            "%registry_mirror%":
+              get_param: registry_mirror
+            "%lb_ip_range_start%":
+              get_param: allocation_pool_start
+            "%lb_ip_range_stop%":
+              get_param: allocation_pool_stop
+            "%wc_notify%":
+              get_attr:
+                - controller_wait_handle
+                - curl_cli
+
+  worker_node_1_user_data:
+    type: "OS::Heat::Value"
+    properties:
+      value:
+        str_replace:
+          template: |
+            #cloud-config
+
+            # https://cloudinit.readthedocs.io/en/24.1/reference/examples.html
+            # Logs are in:
+            #  - /var/log/cloud-init.log
+            #  - /var/log/cloud-init-output.log
+
+            users:
+              - name: root
+                shell: /bin/bash
+                lock_passwd: false
+                plain_text_passwd: root
+                ssh_authorized_keys: %ssh_keys%
+
+            write_files:
+              - path: /tmp/worker_data.json
+                content: '%worker_data%'
+                permissions: '0600'
+
+            runcmd:
+              - |
+                apt-get update && apt-get install -y ansible git jq || true
+
+                WORKER_DATA=$(cat /tmp/worker_data.json | jq -r '."1"')
+                rm -f /tmp/worker_data.json
+
+                ansible-pull -U "https://github.com/s3rj1k/playground.git" \
+                  %ansible_playbook% \
+                  -vvvv \
+                  -e "REGISTRY_MIRROR='%registry_mirror%' \
+                      WORKER_DATA='${WORKER_DATA}'"
+                ANSIBLE_RESULT=$?
+
+                if [ $ANSIBLE_RESULT -eq 0 ]; then
+                  %wc_notify% --data-binary '{"status": "SUCCESS", "data": "Worker node #1 setup complete"}'
+                else
+                  %wc_notify% --data-binary '{"status": "FAILURE", "reason": "Worker node #1 setup failed"}'
+                  exit 1
+                fi
+          params:
+            "%ssh_keys%":
+              get_param: ssh_pub_key
+            "%ansible_playbook%":
+              get_param: ansible_playbook
+            "%registry_mirror%":
+              get_param: registry_mirror
+            "%worker_data%":
+              get_attr:
+                - controller_wait_condition
+                - data
+            "%wc_notify%":
+              get_attr:
+                - worker_node_1_wait_handle
+                - curl_cli
+
+  controller:
+    type: "OS::Nova::Server"
+    properties:
+      name:
+        str_replace:
+          template: "%prefix%-k8s-controller"
+          params:
+            "%prefix%":
+              get_param: prefix
+      availability_zone:
+        get_param: availability_zone
+      flavor:
+        get_param: controller_flavor
+      config_drive: true
+      block_device_mapping_v2:
+        - image_id:
+            get_param: image_id
+          delete_on_termination: true
+          boot_index: 0
+          volume_size:
+            get_param: controller_volume_size
+      networks:
+        - port:
+            get_resource: port_controller
+      user_data_format: RAW
+      user_data:
+        get_attr:
+          - controller_user_data
+          - value
+
+  worker_node_1:
+    type: "OS::Nova::Server"
+    depends_on: controller_wait_condition
+    properties:
+      name:
+        str_replace:
+          template: "%prefix%-k8s-worker-node-1"
+          params:
+            "%prefix%":
+              get_param: prefix
+      availability_zone:
+        get_param: availability_zone
+      flavor:
+        get_param: worker_flavor
+      config_drive: true
+      block_device_mapping_v2:
+        - image_id:
+            get_param: image_id
+          delete_on_termination: true
+          boot_index: 0
+          volume_size:
+            get_param: worker_volume_size
+      networks:
+        - port:
+            get_resource: port_worker_node_1
+      user_data_format: RAW
+      user_data:
+        get_attr:
+          - worker_node_1_user_data
+          - value
+
+outputs:
+  controller_floating_ip:
+    description: Floating IP address for Controller Node
+    value:
+      get_attr:
+        - floating_ip_controller
+        - floating_ip_address
+
+  worker_node_1_floating_ip:
+    description: Floating IP address for Worker Node 1
+    value:
+      get_attr:
+        - floating_ip_worker_node_1
+        - floating_ip_address
+
+  controller_user_data:
+    description: Rendered Controller user-data
+    value:
+      get_attr:
+        - controller_user_data
+        - value
+
+  worker_node_1_user_data:
+    description: Rendered Worker Node 1 user-data
+    value:
+      get_attr:
+        - worker_node_1_user_data
+        - value
+
+  worker_data:
+    description: Worker data
+    value:
+      get_attr:
+        - controller_wait_condition
+        - data

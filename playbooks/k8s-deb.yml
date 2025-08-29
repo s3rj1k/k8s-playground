@@ -1,7 +1,7 @@
 # Copyright 2025 s3rj1k
 # SPDX-License-Identifier: MIT
 
-# DEBUG: ansible-pull -U https://github.com/s3rj1k/playground.git k8s/debian-playbook.yml
+# DEBUG: ansible-pull -U https://github.com/s3rj1k/playground.git playbooks/k8s-deb.yml
 # ref: https://philprime.dev/guides/building-a-production-ready-kubernetes-cluster-from-scratch/lesson-8
 
 ---
@@ -14,7 +14,6 @@
   vars:
     KUBERNETES_VERSION: "v1.33"
     CRIO_VERSION: "v1.33"
-    INSTALL_ZOT: false
     LB_IP_RANGE_START: ""
     LB_IP_RANGE_STOP: ""
     REGISTRY_MIRROR: ""
@@ -58,13 +57,6 @@
         daemon_reload: yes
       when: ansible_service_mgr == 'systemd'
 
-    - name: Restart zot
-      systemd:
-        name: zot
-        state: restarted
-        daemon_reload: yes
-      when: ansible_service_mgr == 'systemd'
-
   tasks:
     - name: Clean up system packages and snap
       block:
@@ -75,21 +67,17 @@
             snap list | awk '/^core/ {print $1}' | xargs -r snap remove --purge
             snap list | awk '/^snapd/ {print $1}' | xargs -r snap remove --purge
             snap list | awk '!/^Name/ {print $1}' | xargs -r snap remove --purge
-          ignore_errors: yes
+          ignore_errors: true
           when: ansible_distribution == "Ubuntu"
 
         - name: Remove system packages
           apt:
             name:
-              - apparmor
-              - byobu
               - lxd
               - lxd-agent-loader
               - lxd-installer
-              - modemmanager
               - plymouth
               - snapd
-              - ufw
             state: absent
             purge: yes
             autoremove: yes
@@ -110,8 +98,6 @@
             name: "{{ item }}"
             masked: yes
           loop:
-            - apparmor.service
-            - firewalld.service
             - lxd-installer.socket
             - plymouth-quit-wait.service
             - plymouth-quit.service
@@ -119,7 +105,6 @@
             - plymouth-start.service
             - snapd.mounts-pre.target
             - snapd.seeded.service
-            - ufw.service
 
     - name: Remove system users and groups
       block:
@@ -129,20 +114,16 @@
             state: absent
             remove: yes
           loop:
-            - debian
             - lxd
-            - ubuntu
-          ignore_errors: yes
+          ignore_errors: true
 
         - name: Remove groups
           group:
             name: "{{ item }}"
             state: absent
           loop:
-            - debian
             - lxd
-            - ubuntu
-          ignore_errors: yes
+          ignore_errors: true
 
     - name: Update and upgrade system packages
       apt:
@@ -852,128 +833,12 @@
           delay: 30
       when: WORKER_DATA is defined and WORKER_DATA | trim | length > 0
 
-    - name: Install and configure Zot OCI registry
-      block:
-        - name: Get latest Zot version
-          uri:
-            url: "https://api.github.com/repos/project-zot/zot/releases/latest"
-            return_content: yes
-          register: zot_release_info
-
-        - name: Set Zot version
-          set_fact:
-            # curl -s "https://api.github.com/repos/project-zot/zot/releases/latest" | jq -r ".tag_name"
-            zot_version: "{{ zot_release_info.json.tag_name }}"
-          when: zot_release_info is defined and zot_release_info.status == 200
-
-        - name: Download Zot binary
-          get_url:
-            url: "https://github.com/project-zot/zot/releases/download/{{ zot_version }}/zot-linux-amd64"
-            dest: /usr/bin/zot
-            mode: "0755"
-            owner: root
-            group: root
-          when: zot_version | trim | length > 0
-
-        - name: Create Zot configuration directory
-          file:
-            path: /etc/zot
-            state: directory
-            mode: "0755"
-            owner: root
-            group: root
-
-        - name: Create Zot storage directory
-          file:
-            path: /var/run/zot
-            state: directory
-            mode: "0755"
-            owner: root
-            group: root
-
-        - name: Create Zot systemd service
-          copy:
-            dest: /etc/systemd/system/zot.service
-            content: |
-              [Unit]
-              Description=OCI Distribution Registry
-              Documentation=https://zotregistry.dev/
-              After=network.target local-fs.target
-
-              [Service]
-              Type=simple
-              ExecStart=/usr/bin/zot serve /etc/zot/config.json
-              Restart=on-failure
-              LimitNOFILE=500000
-
-              [Install]
-              WantedBy=multi-user.target
-            mode: "0644"
-            owner: root
-            group: root
-
-        - name: Reload systemd daemon
-          systemd:
-            daemon_reload: yes
-
-        - name: Configure Zot
-          copy:
-            dest: /etc/zot/config.json
-            content: |
-              {
-                "distSpecVersion": "1.1.1",
-                "storage": {
-                  "rootDirectory": "/var/run/zot",
-                  "gc": true,
-                  "dedupe": true
-                },
-                "http": {
-                  "address": "0.0.0.0",
-                  "port": "8042"
-                },
-                "extensions": {
-                  "search": {
-                    "enable": true,
-                    "cve": {
-                      "updateInterval": "24h"
-                    }
-                  },
-                  "scrub": {
-                    "enable": true,
-                    "interval": "24h"
-                  },
-                  "ui": {
-                    "enable": true
-                  }
-                },
-                "log": {
-                  "level": "info"
-                }
-              }
-            mode: "0644"
-            owner: root
-            group: root
-          notify: Restart zot
-
-        - name: Enable Zot service
-          systemd:
-            name: zot
-            enabled: yes
-      when:
-        - INSTALL_ZOT | default(false) | bool
-        - WORKER_DATA is not defined or WORKER_DATA | trim | length == 0
-
     - name: Mask unnecessary systemd units
       systemd:
         name: "{{ item }}"
         masked: yes
       loop:
-        - auditd.service
-        - chronyd.service
-        - connman.service
         - display-manager.service
-        - ModemManager.service
-        - NetworkManager.service
 
     - name: Handle system reboot check
       block:
